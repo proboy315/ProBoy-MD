@@ -20,7 +20,7 @@ async function main() {
     console.log("Created temporary directory at ./temp");
     logger.info("Created temporary directory at ./temp");
   }
-  console.log(`Raganork v${require("./package.json").version}`);
+  console.log(`ProBoy v${require("./package.json").version}`);
   console.log(`- Configured sessions: ${SESSION.join(", ")}`);
   logger.info(`Configured sessions: ${SESSION.join(", ")}`);
   if (SESSION.length === 0) {
@@ -90,3 +90,4 @@ if (require.main === module) {
     process.exit(1);
   });
 }
+
