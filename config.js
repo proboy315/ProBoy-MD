@@ -115,7 +115,7 @@ const baseConfig = {
     "78c84c62b32a88e86daf87dd509a657a",
   ],
   RG: process.env.RG || "919074309534-1632403322@g.us,120363116963909366@g.us",
-  BOT_INFO: process.env.BOT_INFO || "ProBoy;SHAHAN;https://proboy.vercel.app/botimg.png",
+  BOT_INFO: process.env.BOT_INFO || "ProBoy;SHAHAN;default",
   RBG_KEY: process.env.RBG_KEY || "",
   ALLOWED: process.env.ALLOWED || "91,94,2",
   NOT_ALLOWED: process.env.NOT_ALLOWED || "852",
@@ -282,3 +282,4 @@ Object.defineProperty(config, "debug", {
 });
 
 module.exports = config;
+
