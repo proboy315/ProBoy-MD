@@ -6,8 +6,10 @@ RUN apk add --no-cache \
     python3 \
     make \
     g++
-ADD https://api.github.com/repos/souravkl11/raganork-md/git/refs/heads/main version.json
-RUN git clone -b main https://github.com/souravkl11/raganork-md /rgnk
+# yaha tumhari repo ka API link
+ADD https://api.github.com/repos/proboy315/ProBoy-MD/git/refs/heads/main version.json
+# yaha tumhari repo ka clone
+RUN git clone -b main https://github.com/proboy315/ProBoy-MD /rgnk
 WORKDIR /rgnk
 RUN mkdir -p temp
 ENV TZ=Asia/Kolkata
