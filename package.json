@@ -1,19 +1,19 @@
 {
-  "name": "raganork-md",
+  "name": "ProBoy-MD",
   "version": "6.1.58",
-  "description": "A multi functional wa bot.",
+  "description": "A multi functional WhatsApp bot. Developed BY SHAHAN",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
-    "start": "pm2 start index.js --name raganork-md --attach"
+    "start": "pm2 start index.js --name ProBoy-MD --attach"
   },
   "keywords": [
     "whatsapp",
     "bot",
     "baileys",
-    "raganork"
+    "ProBoy"
   ],
-  "author": "Sourav K",
+  "author": "Shahan",
   "license": "GPL-3.0-or-later",
   "dependencies": {
     "@vitalets/google-translate-api": "^9.2.1",
@@ -43,3 +43,4 @@
     "youtube-sr": "^4.3.11"
   }
 }
+
