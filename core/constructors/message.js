@@ -1,11 +1,25 @@
-const {
-  generateWAMessageFromContent,
+let generateWAMessageFromContent,
   proto,
   prepareWAMessageMedia,
   generateForwardMessageContent,
   getContentType,
-  downloadMediaMessage,
-} = require("baileys");
+  downloadMediaMessage;
+const { loadBaileys } = require("../helpers");
+const baileysPromise = loadBaileys()
+  .then((baileys) => {
+    ({
+      generateWAMessageFromContent,
+      proto,
+      prepareWAMessageMedia,
+      generateForwardMessageContent,
+      getContentType,
+      downloadMediaMessage,
+    } = baileys);
+  })
+  .catch((err) => {
+    console.error("Failed to load baileys:", err.message);
+    process.exit(1);
+  });
 const Base = require("./base");
 let config = require("../../config");
 const ReplyMessage = require("./reply-message");
@@ -77,7 +91,7 @@ class Message extends Base {
       data.message?.stickerMessage?.contextInfo;
 
     if (contextInfo?.quotedMessage) {
-      contextInfo.remoteJid = contextInfo.remoteJid ?? this.jid;
+      contextInfo.remoteJid = contextInfo.remoteJid || this.jid;
       this.reply_message = new ReplyMessage(this.client, contextInfo);
       this.quoted = {
         key: {
@@ -151,7 +165,6 @@ class Message extends Base {
   }
 
   async sendMessage(content, type = "text", options = {}) {
-    // Extract real options (ephemeralExpiration, quoted)
     const { ephemeralExpiration, quoted, ...messageOptions } = options;
 
     const realOptions = {};
@@ -239,7 +252,6 @@ class Message extends Base {
   }
 
   async sendReply(content, type = "text", options = {}) {
-    // Extract real options (ephemeralExpiration, quoted)
     const { ephemeralExpiration, quoted, ...messageOptions } = options;
 
     const realOptions = { quoted: quoted || this.data };
