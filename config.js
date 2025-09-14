@@ -66,7 +66,7 @@ const baseConfig = {
   VERSION,
   ALIVE:
     process.env.ALIVE ||
-    "_I am alive! (use .setalive help for custom alive msg)_",
+    "> Hi I AM $botname /n > A Multi-Functional WhatsApp BOT /n > Develop By SHAHAN /n > I Am Runing From $uptime /n > •ProBoy-MD•",
   BLOCK_CHAT: process.env.BLOCK_CHAT || "",
   PM_ANTISPAM: convertToBool(process.env.PM_ANTISPAM) || "",
   ALWAYS_ONLINE: convertToBool(process.env.ALWAYS_ONLINE) || false,
@@ -115,14 +115,14 @@ const baseConfig = {
     "78c84c62b32a88e86daf87dd509a657a",
   ],
   RG: process.env.RG || "919074309534-1632403322@g.us,120363116963909366@g.us",
-  BOT_INFO: process.env.BOT_INFO || "ProBoy;SHAHAN;default",
+  BOT_INFO: process.env.BOT_INFO || "𝐏𝐫𝐨ᴮᵒʸ-MD;SHAHAN;default",
   RBG_KEY: process.env.RBG_KEY || "",
   ALLOWED: process.env.ALLOWED || "91,94,2",
   NOT_ALLOWED: process.env.NOT_ALLOWED || "852",
   CHATBOT: process.env.CHATBOT || "off",
   HANDLERS: process.env.HANDLERS || ".,",
-  STICKER_DATA: process.env.STICKER_DATA || "ProBoy-MD",
-  BOT_NAME: process.env.BOT_NAME || "ProBoy-MD",
+  STICKER_DATA: process.env.STICKER_DATA || "𝐏𝐫𝐨ᴮᵒʸ-MD",
+  BOT_NAME: process.env.BOT_NAME || "𝐏𝐫𝐨ᴮᵒʸ-MD",
   AUDIO_DATA:
     process.env.AUDIO_DATA === undefined || process.env.AUDIO_DATA === "private"
       ? "default"
@@ -282,4 +282,5 @@ Object.defineProperty(config, "debug", {
 });
 
 module.exports = config;
+
 
