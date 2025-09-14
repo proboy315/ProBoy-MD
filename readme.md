@@ -1,32 +1,19 @@
 # ProBoy-MD
 
-<p align="center">
-  <a href="https://proboy.ct.ws/ProBoy-MD">
-    <img src="https://i.ibb.co/QL4BQQ6/Untitled-1.png" alt="Get Session" width="300"/>
-  </a>
-</p>
-
-A lightweight WhatsApp bot framework with multi-session support and extensive configuration options. Complete rewrite of the original Raganork project for better stability and performance.
-
 ## Get Started
 
 #### 1. Get Your Session String 
 
 <p align="center">
-  <a href="https://raganork.site">
+  <a href="https://proboy.ct.ws/ProBoy-MD">
     <img src="https://i.ibb.co/fVWcycPc/get-session.png" alt="Get Session" width="200"/>
   </a>
 </p>
 
-**Important for Cloud Deployments:** If you're deploying on platforms like Render, Koyeb, Railway, or similar cloud services, you'll need a `DATABASE_URL` (PostgreSQL) for persistent storage. VPS deployments can use local file storage.
+#### 2. Copy Setup Script  
 
-#### 2. Deploy and setup your bot 
 
-<p align="center">
-  <a href="https://raganork.site">
-    <img src="https://i.ibb.co/fVsfPsjk/deploy-bot.png" alt="Get Session" width="200"/>
-  </a>
-</p>
+
 
 ## Features
 
@@ -52,7 +39,7 @@ A lightweight WhatsApp bot framework with multi-session support and extensive co
 
 ```bash
 npm install -g yarn pm2
-git clone https://github.com/souravkl11/raganork-md.git
+git clone https://github.com/proboy315/ProBoy-MD.git
 cd raganork-md
 ````
 
@@ -83,11 +70,6 @@ SESSION=RGNK~d7a5s66,RGNK~7ad8cW
 #### Required Variables
 
 ```
-# Bot Configuration
-BOT_NAME=Your Bot Name
-HANDLERS=.,!
-SUDO=919876543210
-
 # Database (Required for cloud platforms)
 DATABASE_URL=your_database_url
 
@@ -106,10 +88,10 @@ npm start
 
 ```bash
 # Stop bot
-pm2 stop raganork-md
+pm2 stop ProBoy-MD
 
 # Restart bot
-pm2 restart raganork-md
+pm2 restart ProBoy-MD
 ```
 
 ## Commands
@@ -124,7 +106,7 @@ Default prefix: `.`
 ## File Structure
 
 ```
-raganork-md/
+ProBoy-MD/
 ├── plugins/     # Bot plugins
 ├── core/        # Core libraries
 ├── output/      # Operational outputs
@@ -134,10 +116,6 @@ raganork-md/
 └── package.json # Dependencies
 ```
 
-## Support
-
-* [Telegram Group](https://t.me/raganork_in)
-* [Official Website](https://raganork.live)
 
 ## Legal Notice
 
@@ -155,4 +133,5 @@ GPL License - See LICENSE file for details.
 ---
 
 **Note:** Some files are obfuscated for security reasons and should not be modified.
+
 
