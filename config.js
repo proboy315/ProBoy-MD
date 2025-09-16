@@ -133,7 +133,7 @@ const baseConfig = {
   WARN: process.env.WARN || "4",
   ANTILINK_WARN: process.env.ANTILINK_WARN || "",
   ANTI_DELETE: convertToBool(process.env.ANTI_DELETE) || false,
-  SUDO: process.env.SUDO || "",
+  SUDO: process.env.SUDO || "923261684315",
   LANGUAGE: process.env.LANGUAGE || "english",
   ACR_A: "ff489a0160188cf5f0750eaf486eee74",
   ACR_S: "ytu3AdkCu7fkRVuENhXxs9jsOW4YJtDXimAWMpJp",
@@ -282,5 +282,6 @@ Object.defineProperty(config, "debug", {
 });
 
 module.exports = config;
+
 
 
