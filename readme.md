@@ -1,85 +1,32 @@
-# ProBoy-MD
+# Raganork-MD
+
+<p align="center">
+  <a href="https://raganork.site">
+    <img src="https://i.ibb.co/QL4BQQ6/Untitled-1.png" alt="Get Session" width="300"/>
+  </a>
+</p>
+
+A lightweight WhatsApp bot framework with multi-session support and extensive configuration options. Complete rewrite of the original Raganork project for better stability and performance.
 
 ## Get Started
 
 #### 1. Get Your Session String 
 
 <p align="center">
-  <a href="https://proboy.ct.ws/ProBoy-MD">
+  <a href="https://raganork.site">
     <img src="https://i.ibb.co/fVWcycPc/get-session.png" alt="Get Session" width="200"/>
   </a>
 </p>
 
-#### 2. Copy Setup Script  
+**Important for Cloud Deployments:** If you're deploying on platforms like Render, Koyeb, Railway, or similar cloud services, you'll need a `DATABASE_URL` (PostgreSQL) for persistent storage. VPS deployments can use local file storage.
 
+#### 2. Deploy and setup your bot 
 
-```bash
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-
-const SESSION = "RGNK~Vke2cQ9W";
-
-function run(command, options = {}) {
-  try {
-    execSync(command, { stdio: 'inherit', ...options });
-  } catch (error) {
-    console.error('Error running command: ' + command);
-    process.exit(1);
-  }
-}
-
-if (!fs.existsSync('./ffmpeg')) {
-  console.log("🔧 Downloading FFmpeg...");
-  run('curl -L https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz -o ffmpeg.tar.xz');
-  run('tar -xf ffmpeg.tar.xz');
-  const ffmpegDir = fs.readdirSync('.').find(d => /^ffmpeg-.*-static$/.test(d));
-  if (!ffmpegDir) {
-    console.error('FFmpeg static directory not found after extraction.');
-    process.exit(1);
-  }
-  fs.renameSync(path.join(ffmpegDir, 'ffmpeg'), './ffmpeg');
-  run('chmod +x ./ffmpeg');
-  run('rm -rf ffmpeg.tar.xz ' + ffmpegDir);
-  console.log("✅ FFmpeg ready.");
-} else {
-  console.log("⚡ FFmpeg already exists.");
-}
-
-if (!fs.existsSync('./ProBoy-MD')) {
-  console.log("📥 Cloning ProBoy-MD...");
-  run('git clone https://github.com/proboy315/ProBoy-MD');
-} else {
-  console.log("🔄 ProBoy-MD  already cloned.");
-}
-
-try {
-  process.chdir('./ProBoy-MD');
-} catch {
-  console.error('Failed to change directory to ProBoy-MD !');
-  process.exit(1);
-}
-
-try {
-  execSync('yarn --version', { stdio: 'ignore' });
-} catch {
-  console.log("📦 Installing yarn with Corepack...");
-  run('corepack enable');
-  run('echo y | corepack prepare yarn@1.22.22 --activate --yes');
-}
-
-console.log("📦 Installing dependencies with yarn...");
-run('yarn install --ignore-engines');
-
-console.log("🔐 Writing session...");
-fs.writeFileSync('config.env', 'SESSION=' + SESSION + '\n');
-
-console.log("🚀 Starting bot...");
-run('yarn start');
-
-````
-#### 2. CreatE Start.js 
-on Your panel server and start with node start.js 
+<p align="center">
+  <a href="https://raganork.site">
+    <img src="https://i.ibb.co/fVsfPsjk/deploy-bot.png" alt="Get Session" width="200"/>
+  </a>
+</p>
 
 ## Features
 
@@ -105,7 +52,7 @@ on Your panel server and start with node start.js
 
 ```bash
 npm install -g yarn pm2
-git clone https://github.com/proboy315/ProBoy-MD.git
+git clone https://github.com/souravkl11/raganork-md.git
 cd raganork-md
 ````
 
@@ -136,6 +83,11 @@ SESSION=RGNK~d7a5s66,RGNK~7ad8cW
 #### Required Variables
 
 ```
+# Bot Configuration
+BOT_NAME=Your Bot Name
+HANDLERS=.,!
+SUDO=919876543210
+
 # Database (Required for cloud platforms)
 DATABASE_URL=your_database_url
 
@@ -154,10 +106,10 @@ npm start
 
 ```bash
 # Stop bot
-pm2 stop ProBoy-MD
+pm2 stop raganork-md
 
 # Restart bot
-pm2 restart ProBoy-MD
+pm2 restart raganork-md
 ```
 
 ## Commands
@@ -172,7 +124,7 @@ Default prefix: `.`
 ## File Structure
 
 ```
-ProBoy-MD/
+raganork-md/
 ├── plugins/     # Bot plugins
 ├── core/        # Core libraries
 ├── output/      # Operational outputs
@@ -182,6 +134,10 @@ ProBoy-MD/
 └── package.json # Dependencies
 ```
 
+## Support
+
+* [Telegram Group](https://t.me/raganork_in)
+* [Official Website](https://raganork.live)
 
 ## Legal Notice
 
@@ -199,6 +155,3 @@ GPL License - See LICENSE file for details.
 ---
 
 **Note:** Some files are obfuscated for security reasons and should not be modified.
-
-
-

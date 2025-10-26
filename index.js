@@ -70,7 +70,7 @@ async function main() {
       res.end("OK");
     } else {
       res.writeHead(200, { "Content-Type": "text/plain" });
-      res.end("Raganork Bot is running!");
+      res.end("ProBoy Bot is running!");
     }
   });
 
@@ -90,4 +90,3 @@ if (require.main === module) {
     process.exit(1);
   });
 }
-
