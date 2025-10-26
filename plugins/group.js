@@ -1,6 +1,14 @@
 const { getString } = require("./utils/lang");
 const Lang = getString("group");
-const { delay } = require("baileys");
+const { loadBaileys } = require("../core/helpers");
+const baileysPromise = loadBaileys()
+  .then((baileys) => {
+    ({ delay } = baileys);
+  })
+  .catch((err) => {
+    console.error("Failed to load baileys:", err.message);
+    process.exit(1);
+  });
 const { isAdmin, isNumeric, mentionjid } = require("./utils");
 const { ADMIN_ACCESS, HANDLERS, MODE } = require("../config");
 const { Module } = require("../main");
@@ -9,14 +17,6 @@ const {
   getFullMessage,
   fetchRecentChats,
 } = require("../core/store");
-const {
-  isLid,
-  isJid,
-  getBotId,
-  getNumericId,
-  getSudoIdentifier,
-  isPrivateMessage,
-} = require("./utils/lid-helper");
 var handler = HANDLERS !== "false" ? HANDLERS.split("")[0] : "";
 
 Module(
@@ -650,9 +650,9 @@ Module(
         var msg = `_Kicking common participants of:_ *${g1.subject}* & *${g2.subject}*\n_count: ${common.length}_\n`;
         common
           .map((e) => e.id)
-          .filter((e) => !e.includes(getNumericId(getBotId(message.client))))
+          .filter((e) => !e.includes(message.client.user?.id?.split(":")[0]))
           .map(async (s) => {
-            msg += "```@" + getNumericId(s) + "```\n";
+            msg += "```@" + s.split("@")[0] + "```\n";
             jids.push(s);
           });
         await message.client.sendMessage(message.jid, {
@@ -679,7 +679,7 @@ Module(
       var jids = [];
       common.map(async (s) => {
         msg += "```@" + s.id.split("@")[0] + "```\n";
-        jids.push(s.id.split("@")[0] + "@s.whatsapp.net");
+        jids.push(s.id);
       });
       await message.client.sendMessage(message.jid, {
         text: msg,
@@ -970,10 +970,10 @@ Module(
   async (message, match) => {
     if (message.reply_message && message.reply_message.image) {
       var image = await message.reply_message.download();
-      await message.client.setProfilePicture(
-        message.client.user.id.split(":")[0] + "@s.whatsapp.net",
-        { url: image }
-      );
+      const botJid = message.client.user?.id?.split(":")[0] + "@s.whatsapp.net";
+      await message.client.setProfilePicture(botJid, {
+        url: image,
+      });
       return await message.sendReply("_*Updated profile pic ✅*_");
     }
     if (message.reply_message && !message.reply_message.image) {

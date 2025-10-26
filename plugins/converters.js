@@ -6,19 +6,16 @@ const config = require("../config");
 const axios = require("axios");
 const fileType = require("file-type");
 
-// compatibility wrapper for old and new file-type versions
-// can be removed when all users update to newer modules
 const getFileType = async (buffer) => {
   try {
-    // try newer api first (v17+)
     if (fileType.fileTypeFromBuffer) {
       return await fileType.fileTypeFromBuffer(buffer);
     }
-    // fallback to older api (v16 and below)
+
     if (fileType.fromBuffer) {
       return await fileType.fromBuffer(buffer);
     }
-    // last resort for really old versions
+
     return await fileType(buffer);
   } catch (error) {
     console.log("file-type detection failed:", error);
@@ -105,8 +102,8 @@ Module(
       author: STICKER_DATA.split(";")[1] || "",
       packname: message.senderName,
       categories: STICKER_DATA.split(";")[2] || "😂",
-      android: "https://github.com/proboy315/ProBoy-MD/",
-      ios: "https://github.com/proboy315/ProBoy-MD/",
+      android: "https://github.com/souravkl11/Raganork-md/",
+      ios: "https://github.com/souravkl11/Raganork-md/",
     };
     if (message.reply_message.image === true) {
       return await message.sendMessage(
@@ -259,8 +256,8 @@ Module(
       author: STICKER_DATA.split(";")[1] || "",
       packname: message.senderName,
       categories: STICKER_DATA.split(";")[2] || "😂",
-      android: "https://github.com/proboy315/ProBoy-MD/",
-      ios: "https://github.com/proboy315/ProBoy-MD/",
+      android: "https://github.com/souravkl11/Raganork-md/",
+      ios: "https://github.com/souravkl11/Raganork-md/",
     };
     await message.sendMessage(
       fs.readFileSync(await addExif(result, exif)),
@@ -870,4 +867,3 @@ Module(
     }
   }
 );
-
