@@ -1,48 +1,30 @@
-const {
-  generateWAMessageFromContent,
+let generateWAMessageFromContent,
   proto,
   prepareWAMessageMedia,
   generateForwardMessageContent,
   getContentType,
-  downloadMediaMessage,
-} = require("baileys");
+  downloadMediaMessage;
+const { loadBaileys } = require("../helpers");
+const baileysPromise = loadBaileys()
+  .then((baileys) => {
+    ({
+      generateWAMessageFromContent,
+      proto,
+      prepareWAMessageMedia,
+      generateForwardMessageContent,
+      getContentType,
+      downloadMediaMessage,
+    } = baileys);
+  })
+  .catch((err) => {
+    console.error("Failed to load baileys:", err.message);
+    process.exit(1);
+  });
 const Base = require("./base");
 let config = require("../../config");
 const ReplyMessage = require("./reply-message");
 const fs = require("fs");
-const {
-  isLid,
-  isJid,
-  getBotId,
-  getBotJid,
-  getBotLid,
-  getBotNumericId,
-  getNumericId,
-  isSudo,
-  isFromOwner,
-  isPrivateMessage,
-  isLidParticipant,
-} = require("../../plugins/utils/lid-helper");
-
-async function genThumb(url) {
-  try {
-    let size = 301;
-    const jimp = await require("jimp").read(url);
-    function getPossibleRatio(a, b) {
-      for (var i = 0; size + 2 > size + 1; i++) {
-        a = a > size || b > size ? a / 1.001 : a;
-        b = a > size || b > size ? b / 1.001 : b;
-        if (parseInt(a) < size && parseInt(b) < size)
-          return { w: parseInt(a), h: parseInt(b) };
-      }
-    }
-    var { w, h } = getPossibleRatio(jimp.bitmap.width, jimp.bitmap.height);
-    return await jimp.resize(w, h).getBufferAsync("image/jpeg");
-  } catch (error) {
-    console.error("Error generating thumbnail:", error);
-    return null;
-  }
-}
+const { genThumb } = require("../helpers");
 
 class Message extends Base {
   constructor(client, data) {
@@ -54,15 +36,27 @@ class Message extends Base {
     this.jid = data.key.remoteJid;
     this.isGroup = data.key.remoteJid.endsWith("@g.us");
     this.fromMe = data.key.fromMe;
-    this.isLid = this.isGroup && isLid(data.key.participant);
-    this.sender = this.isGroup ? data.key.participant : data.key.remoteJid;
-    this.fromOwner = isFromOwner(data, this.client, config.SUDO);
+
+    if (this.isGroup) {
+      this.sender = data.key.participant || data.key.participantAlt;
+    } else {
+      this.sender = data.key.remoteJid;
+    }
+
+    const botNumeric = this.client.user?.lid?.split(":")[0];
+    const senderNumeric = this.sender?.split("@")[0];
+
+    const isSudo = config.SUDO?.split(",")
+      .map((s) => s.trim())
+      .includes(senderNumeric);
+    this.fromOwner = data.key.fromMe || senderNumeric === botNumeric || isSudo;
+
     this.senderName = data.pushName;
-    this.myjid = getBotNumericId(data, this.client);
+    this.myjid = botNumeric;
     this.message =
       (data.message?.extendedTextMessage === null
         ? data.message?.conversation
-        : data.message?.extendedTextMessage.text) || "";
+        : data.message?.extendedTextMessage?.text) || "";
     this.text = this.message;
     this.timestamp = data.messageTimestamp;
     this.data = data;
@@ -77,16 +71,18 @@ class Message extends Base {
       data.message?.stickerMessage?.contextInfo;
 
     if (contextInfo?.quotedMessage) {
-      contextInfo.remoteJid = contextInfo.remoteJid ?? this.jid;
+      contextInfo.remoteJid = contextInfo.remoteJid || this.jid;
       this.reply_message = new ReplyMessage(this.client, contextInfo);
+
+      const quotedParticipantJid = contextInfo.participant;
       this.quoted = {
         key: {
           remoteJid: contextInfo.remoteJid,
           fromMe:
-            contextInfo.participant === getBotJid(this.client) ||
-            contextInfo.participant === getBotLid(this.client),
+            quotedParticipantJid?.split("@")[0] ===
+            this.client.user?.id?.split(":")[0],
           id: this.reply_message.id,
-          participant: contextInfo.participant,
+          participant: quotedParticipantJid,
         },
         message: this.reply_message.data.message,
       };
@@ -98,9 +94,9 @@ class Message extends Base {
       ).id;
       this.isOwnResponse =
         data.message.interactiveResponseMessage?.contextInfo?.participant &&
-        getNumericId(
-          data.message.interactiveResponseMessage.contextInfo.participant
-        ) === this.myjid;
+        data.message.interactiveResponseMessage.contextInfo.participant.split(
+          "@"
+        )[0] === this.myjid;
     } else {
       this.list = null;
     }
@@ -151,7 +147,6 @@ class Message extends Base {
   }
 
   async sendMessage(content, type = "text", options = {}) {
-    // Extract real options (ephemeralExpiration, quoted)
     const { ephemeralExpiration, quoted, ...messageOptions } = options;
 
     const realOptions = {};
@@ -189,6 +184,54 @@ class Message extends Base {
       return await this.client.sendMessage(this.jid, msgContent, realOptions);
     }
     if (type == "audio") {
+      if (messageOptions.ptt) {
+        try {
+          const { toBuffer, convertToOgg } = require("../helpers");
+          const inputBuffer = await toBuffer(content);
+          let oggBuffer = null;
+          if (inputBuffer) {
+            try {
+              oggBuffer = await convertToOgg(inputBuffer);
+            } catch (e) {
+              console.error(
+                "PTT conversion failed, falling back to original content:",
+                e
+              );
+            }
+          }
+
+          if (oggBuffer && Buffer.isBuffer(oggBuffer)) {
+            return await this.client.sendMessage(
+              this.jid,
+              {
+                audio: oggBuffer,
+                mimetype: "audio/ogg; codecs=opus",
+                ptt: true,
+                ...messageOptions,
+              },
+              realOptions
+            );
+          }
+          return await this.client.sendMessage(
+            this.jid,
+            {
+              audio: content,
+              mimetype: "audio/ogg",
+              ptt: true,
+              ...messageOptions,
+            },
+            realOptions
+          );
+        } catch (err) {
+          console.error("Error preparing ptt audio:", err);
+          return await this.client.sendMessage(
+            this.jid,
+            { audio: content, mimetype: "audio/ogg", ...messageOptions },
+            realOptions
+          );
+        }
+      }
+
       return await this.client.sendMessage(
         this.jid,
         { audio: content, mimetype: "audio/mp4", ...messageOptions },
@@ -239,7 +282,6 @@ class Message extends Base {
   }
 
   async sendReply(content, type = "text", options = {}) {
-    // Extract real options (ephemeralExpiration, quoted)
     const { ephemeralExpiration, quoted, ...messageOptions } = options;
 
     const realOptions = { quoted: quoted || this.data };
