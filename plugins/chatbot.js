@@ -17,7 +17,7 @@ const chatContexts = new Map();
 const modelStates = new Map();
 
 let globalSystemPrompt =
-  "You are a helpful AI assistant named Raganork. Be concise, friendly, and informative.";
+  "You are a helpful AI assistant named ProBoy. Be concise, friendly, and informative.";
 
 async function initChatbotData() {
   try {
@@ -64,6 +64,7 @@ async function saveSystemPrompt(prompt) {
 
 async function imageToGenerativePart(imageBuffer) {
   try {
+
     const data = imageBuffer.toString("base64");
 
     return {
