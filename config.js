@@ -66,7 +66,7 @@ const baseConfig = {
   VERSION,
   ALIVE:
     process.env.ALIVE ||
-    "> Hi I AM $botname /n > A Multi-Functional WhatsApp BOT /n > Develop By SHAHAN /n > I Am Runing From $uptime /n > •ProBoy-MD•",
+    "> Hi I AM ProBoy-MD A Multi-Functional WhatsApp BOT /n > Develop By SHAHAN •ProBoy-MD•",
   BLOCK_CHAT: process.env.BLOCK_CHAT || "",
   PM_ANTISPAM: convertToBool(process.env.PM_ANTISPAM) || "",
   ALWAYS_ONLINE: convertToBool(process.env.ALWAYS_ONLINE) || false,
