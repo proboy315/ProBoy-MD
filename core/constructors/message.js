@@ -25,6 +25,7 @@ let config = require("../../config");
 const ReplyMessage = require("./reply-message");
 const fs = require("fs");
 const { genThumb } = require("../helpers");
+const { getTempPath } = require("../helpers");
 
 class Message extends Base {
   constructor(client, data) {
@@ -40,23 +41,36 @@ class Message extends Base {
     if (this.isGroup) {
       this.sender = data.key.participant || data.key.participantAlt;
     } else {
-      this.sender = data.key.remoteJid;
+      this.sender = data.key.remoteJid.endsWith("lid")
+        ? data.key.remoteJid
+        : data.key.remoteJidAlt;
     }
 
-    const botNumeric = this.client.user?.lid?.split(":")[0];
+    const botNumeric = this.client.user?.lid?.split(":")[0] + "@lid";
     const senderNumeric = this.sender?.split("@")[0];
 
-    const isSudo = config.SUDO?.split(",")
-      .map((s) => s.trim())
-      .includes(senderNumeric);
-    this.fromOwner = data.key.fromMe || senderNumeric === botNumeric || isSudo;
+    // check if sender is sudo using SUDO_MAP
+    let isSudoUser = false;
+    if (config.SUDO_MAP) {
+      try {
+        const sudoMap = JSON.parse(config.SUDO_MAP);
+        if (Array.isArray(sudoMap)) {
+          isSudoUser = sudoMap.includes(this.sender);
+        }
+      } catch (e) {
+        isSudoUser = false;
+      }
+    }
+
+    this.fromOwner =
+      data.key.fromMe || senderNumeric === botNumeric || isSudoUser;
 
     this.senderName = data.pushName;
     this.myjid = botNumeric;
     this.message =
-      (data.message?.extendedTextMessage === null
-        ? data.message?.conversation
-        : data.message?.extendedTextMessage?.text) || "";
+      data.message?.extendedTextMessage?.text ??
+      data.message?.conversation ??
+      "";
     this.text = this.message;
     this.timestamp = data.messageTimestamp;
     this.data = data;
@@ -272,11 +286,11 @@ class Message extends Base {
       );
     const buffer = await downloadMediaMessage(this.data, "buffer");
     if (type === "buffer") return buffer;
-    var filename =
-      "./temp/temp." +
+    const ext =
       this.data.message[Object.keys(this.data.message)[0]].mimetype?.split(
         "/"
       )[1];
+    const filename = getTempPath(`temp.${ext}`);
     await fs.writeFileSync(filename, buffer);
     return filename;
   }
@@ -380,22 +394,12 @@ class Message extends Base {
       );
     }
   }
-  async edit(text = "", _jid = false, _key = false) {
-    return await this.client.relayMessage(
-      _jid || this.jid,
-      {
-        protocolMessage: {
-          key: _key,
-          type: 14,
-          editedMessage: {
-            conversation: text,
-          },
-        },
-      },
-      {}
-    );
+  async edit(text = "", _jid = this.jid, _key = false) {
+    return await this.client.sendMessage(_jid, {
+      text,
+      edit: _key,
+    });
   }
-
   async getThumb(url) {
     return await genThumb(url);
   }
