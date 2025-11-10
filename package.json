@@ -1,6 +1,6 @@
 {
   "name": "ProBoy-MD",
-  "version": "6.2.11",
+  "version": "6.2.15",
   "description": "A multi functional WhatsApp bot. Developed BY SHAHAN",
   "main": "index.js",
   "type": "commonjs",
