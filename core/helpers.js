@@ -8,7 +8,7 @@ let TEMP_DIR;
 if (process.env.TEMP_DIR) {
   TEMP_DIR = process.env.TEMP_DIR;
 } else {
-  TEMP_DIR = path.join(os.tmpdir(), "raganork");
+  TEMP_DIR = path.join(os.tmpdir(), "ProBoy");
 }
 
 function ensureTempDir() {
@@ -113,7 +113,7 @@ async function pingHostname(url) {
   try {
     const response = await axios.get(url, {
       timeout: 8000,
-      headers: { "User-Agent": "Raganork-KickBot/1.0" },
+      headers: { "User-Agent": "ProBoy-KickBot/1.0" },
     });
     if (response.status === 200) {
       return true;
@@ -214,3 +214,4 @@ module.exports = {
   getTempPath,
   getTempSubdir,
 };
+
