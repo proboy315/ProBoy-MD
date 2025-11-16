@@ -35,10 +35,22 @@ const sequelize =
           match: [/SQLITE_BUSY/, /database is locked/, /EBUSY/],
           max: 3,
         },
+        pool: {
+          max: 5,
+          min: 1,
+          acquire: 30000,
+          idle: 10000,
+        },
       })
     : new Sequelize(DATABASE_URL, {
         dialectOptions: { ssl: { require: true, rejectUnauthorized: false } },
         logging: DEBUG,
+        pool: {
+          max: 20,
+          min: 5,
+          acquire: 30000,
+          idle: 10000,
+        },
       });
 
 const SESSION_STRING = process.env.SESSION || process.env.SESSION_ID;
@@ -66,7 +78,7 @@ const baseConfig = {
   VERSION,
   ALIVE:
     process.env.ALIVE ||
-    "> Hi I AM ProBoy-MD A Multi-Functional WhatsApp BOT /n > Develop By SHAHAN •ProBoy-MD•",
+    "_I am alive! (use .setalive help for custom alive msg)_",
   BLOCK_CHAT: process.env.BLOCK_CHAT || "",
   PM_ANTISPAM: convertToBool(process.env.PM_ANTISPAM) || "",
   ALWAYS_ONLINE: convertToBool(process.env.ALWAYS_ONLINE) || false,
@@ -115,14 +127,14 @@ const baseConfig = {
     "78c84c62b32a88e86daf87dd509a657a",
   ],
   RG: process.env.RG || "919074309534-1632403322@g.us,120363116963909366@g.us",
-  BOT_INFO: process.env.BOT_INFO || "𝐏𝐫𝐨ᴮᵒʸ-MD;SHAHAN;default",
+  BOT_INFO: process.env.BOT_INFO || "ProBoy-MD;SHAHAN;default",
   RBG_KEY: process.env.RBG_KEY || "",
   ALLOWED: process.env.ALLOWED || "91,94,2",
   NOT_ALLOWED: process.env.NOT_ALLOWED || "852",
   CHATBOT: process.env.CHATBOT || "off",
   HANDLERS: process.env.HANDLERS || ".,",
-  STICKER_DATA: process.env.STICKER_DATA || "𝐏𝐫𝐨ᴮᵒʸ-MD",
-  BOT_NAME: process.env.BOT_NAME || "𝐏𝐫𝐨ᴮᵒʸ-MD",
+  STICKER_DATA: process.env.STICKER_DATA || "ProBoy-MD",
+  BOT_NAME: process.env.BOT_NAME || "ProBoy-MD",
   AUDIO_DATA:
     process.env.AUDIO_DATA === undefined || process.env.AUDIO_DATA === "private"
       ? "default"
@@ -133,8 +145,10 @@ const baseConfig = {
   WARN: process.env.WARN || "4",
   ANTILINK_WARN: process.env.ANTILINK_WARN || "",
   ANTI_DELETE: convertToBool(process.env.ANTI_DELETE) || false,
-  SUDO: process.env.SUDO || "923261684315",
+  SUDO: process.env.SUDO || "",
   LANGUAGE: process.env.LANGUAGE || "english",
+  AUTO_UPDATE: convertToBool(process.env.AUTO_UPDATE) || true,
+  SUPPORT_GROUP: process.env.SUPPORT_GROUP || "https://t.me/raganork_in",
   ACR_A: "ff489a0160188cf5f0750eaf486eee74",
   ACR_S: "ytu3AdkCu7fkRVuENhXxs9jsOW4YJtDXimAWMpJp",
   settingsMenu,
@@ -282,6 +296,3 @@ Object.defineProperty(config, "debug", {
 });
 
 module.exports = config;
-
-
-
