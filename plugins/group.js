@@ -286,76 +286,67 @@ Module(
 Module(
   {
     pattern: "quoted",
-    fromMe: false,
+    fromMe: true,
     desc: "Sends replied message's replied message. Useful for recovering deleted messages.",
     usage: ".quoted (reply to a quoted message)",
     use: "group",
   },
   async (message, match) => {
-    if (!message.isGroup) return await message.sendReply("_Group command!_");
-    let adminAccesValidated = ADMIN_ACCESS
-      ? await isAdmin(message, message.sender)
-      : false;
-    if (message.fromOwner || adminAccesValidated) {
-      if (!message.reply_message) {
-        return await message.sendReply("_Please reply to a message!_");
-      }
-      try {
-        const repliedMessage = await getFullMessage(
-          message.reply_message.id + "_"
+    try {
+      const repliedMessage = await getFullMessage(
+        message.reply_message.id + "_"
+      );
+      if (!repliedMessage.found) {
+        return await message.sendReply(
+          "_Original message not found in database!_"
         );
-        if (!repliedMessage.found) {
-          return await message.sendReply(
-            "_Original message not found in database!_"
-          );
-        }
-        const messageData = repliedMessage.messageData;
-        let quotedMessageId = null;
-        let quotedMessage = null;
-        let participant = null;
-        if (messageData.message) {
-          const msgKeys = Object.keys(messageData.message);
-          for (const key of msgKeys) {
-            const msgContent = messageData.message[key];
-            if (msgContent?.contextInfo?.stanzaId) {
-              quotedMessageId = msgContent.contextInfo.stanzaId;
-              quotedMessage = msgContent.contextInfo.quotedMessage;
-              participant = msgContent.contextInfo.participant;
-              break;
-            }
+      }
+      const messageData = repliedMessage.messageData;
+      let quotedMessageId = null;
+      let quotedMessage = null;
+      let participant = null;
+      if (messageData.message) {
+        const msgKeys = Object.keys(messageData.message);
+        for (const key of msgKeys) {
+          const msgContent = messageData.message[key];
+          if (msgContent?.contextInfo?.stanzaId) {
+            quotedMessageId = msgContent.contextInfo.stanzaId;
+            quotedMessage = msgContent.contextInfo.quotedMessage;
+            participant = msgContent.contextInfo.participant;
+            break;
           }
         }
-        if (!quotedMessageId) {
-          return await message.sendReply(
-            "_The replied message doesn't contain a quoted message!_"
-          );
-        }
-        const originalQuoted = await getFullMessage(quotedMessageId + "_");
-        if (originalQuoted.found) {
-          return await message.forwardMessage(
-            message.jid,
-            originalQuoted.messageData
-          );
-        } else if (quotedMessage) {
-          const reconstructedMsg = {
-            key: {
-              remoteJid: message.jid,
-              fromMe: false,
-              id: quotedMessageId,
-              participant: participant,
-            },
-            message: quotedMessage,
-          };
-          return await message.forwardMessage(message.jid, reconstructedMsg);
-        } else {
-          return await message.sendReply(
-            "_Quoted message not found and no cached data available!_"
-          );
-        }
-      } catch (error) {
-        console.error("Error in quoted command:", error);
-        return await message.sendReply("_Failed to load quoted message!_");
       }
+      if (!quotedMessageId) {
+        return await message.sendReply(
+          "_The replied message doesn't contain a quoted message!_"
+        );
+      }
+      const originalQuoted = await getFullMessage(quotedMessageId);
+      if (originalQuoted.found) {
+        return await message.forwardMessage(
+          message.jid,
+          originalQuoted.messageData
+        );
+      } else if (quotedMessage) {
+        const reconstructedMsg = {
+          key: {
+            remoteJid: message.jid,
+            fromMe: false,
+            id: quotedMessageId,
+            participant: participant,
+          },
+          message: quotedMessage,
+        };
+        return await message.forwardMessage(message.jid, reconstructedMsg);
+      } else {
+        return await message.sendReply(
+          "_Quoted message not found and no cached data available!_"
+        );
+      }
+    } catch (error) {
+      console.error("Error in quoted command:", error);
+      return await message.sendReply("_Failed to load quoted message!_");
     }
   }
 );
@@ -725,7 +716,7 @@ Module(
     desc: Lang.TAGALL_DESC,
     use: "group",
     usage:
-      ".tag (reply to message)\n.tagall (tag everyone)\n.tagadmin (tag admins only)\n.tag 120363355307899193@g.us (tag in specific group)",
+      ".tag text\n.tag (reply to message)\n.tagall (tag everyone)\n.tagadmin (tag admins only)\n.tag 120363355307899193@g.us (tag in specific group)",
   },
   async (message, match) => {
     const groupJidMatch = match[2]?.match(/(\d+@g\.us)/);
@@ -750,9 +741,12 @@ Module(
     const isTagAdmin = match[1]?.includes("admin");
     const isTagAll = match[1]?.includes("all");
     const isReply = !!message.reply_message;
-    if (!isReply && !isTagAdmin && !isTagAll) {
+    const customText = match[2]?.trim();
+    const hasCustomText = customText && !customText.match(/(\d+@g\.us)/);
+    
+    if (!isReply && !isTagAdmin && !isTagAll && !hasCustomText) {
       return await message.sendReply(
-        `_Tag what?_\n\n${handler}tag \`admin\`\n${handler}tag \`all\`\n${handler}tag \`(reply)\`\n${handler}tag \`120363355307899193@g.us\``
+        `_Tag what?_\n\n${handler}tag \`<text here>\`\n${handler}tag \`admin\`\n${handler}tag \`all\`\n${handler}tag \`(reply)\`\n${handler}tag \`120363355307899193@g.us\``
       );
     }
     const targets = [];
@@ -764,8 +758,10 @@ Module(
       msgText += `${targets.length}. @${p.id.split("@")[0]}\n`;
     }
     if (isReply) {
+      await message.forwardMessage(message.jid, message.quoted,{detectLinks: true,contextInfo: {mentionedJid: targets, isForwarded: false}});
+    } else if (hasCustomText) {
       await message.client.sendMessage(message.jid, {
-        forward: message.quoted,
+        text: customText,
         mentions: targets,
       });
     } else {
