@@ -15,7 +15,7 @@
   ],
   "author": "Shahan",
   "license": "GPL-3.0-or-later",
-  "dependencies": {
+    "dependencies": {
     "@vitalets/google-translate-api": "^9.2.1",
     "acrcloud": "^1.4.0",
     "audio-decode": "^2.2.3",
