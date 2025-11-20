@@ -1,14 +1,13 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const axios = require("axios");
 const { spawn } = require("child_process");
 
 let TEMP_DIR;
 if (process.env.TEMP_DIR) {
   TEMP_DIR = process.env.TEMP_DIR;
 } else {
-  TEMP_DIR = path.join(os.tmpdir(), "ProBoy");
+  TEMP_DIR = path.join(os.tmpdir(), "raganork");
 }
 
 function ensureTempDir() {
@@ -111,11 +110,11 @@ function detectHostnames() {
 
 async function pingHostname(url) {
   try {
-    const response = await axios.get(url, {
-      timeout: 8000,
-      headers: { "User-Agent": "ProBoy-KickBot/1.0" },
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(8000),
+      headers: { "User-Agent": "Raganork-KickBot/1.0" },
     });
-    if (response.status === 200) {
+    if (response.ok) {
       return true;
     }
   } catch (e) {
@@ -214,4 +213,3 @@ module.exports = {
   getTempPath,
   getTempSubdir,
 };
-
