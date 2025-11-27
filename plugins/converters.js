@@ -36,12 +36,10 @@ let MODE = config.MODE,
   STICKER_DATA = config.STICKER_DATA;
 const { getString } = require("./utils/lang");
 const Lang = getString("converters");
-let w = MODE == "public" ? false : true;
 
 Module(
   {
     pattern: "img ?(.*)",
-    fromMe: w,
     use: "search",
     desc: "Searches for an image on Google Images and sends the requested number of results.",
   },
@@ -112,7 +110,6 @@ Module(
   {
     pattern: "sticker ?(.*)",
     use: "edit",
-    fromMe: w,
     desc: Lang.STICKER_DESC,
   },
   async (message, match) => {
@@ -122,8 +119,8 @@ Module(
         author: STICKER_DATA.split(";")[1] || "",
         packname: message.senderName,
         categories: STICKER_DATA.split(";")[2] || "😂",
-        android: "https://github.com/proboy315/ProBoy-MD/",
-        ios: "https://github.com/proboy315/ProBoy-MD/",
+        android: "https://github.com/souravkl11/Raganork-md/",
+        ios: "https://github.com/souravkl11/Raganork-md/",
       };
       return await message.sendMessage(
         fs.readFileSync(await addExif(result, exif)),
@@ -133,14 +130,42 @@ Module(
 
     if (message.reply_message === false)
       return await message.send(Lang.STICKER_NEED_REPLY);
-    var savedFile = await message.reply_message.download();
+
     var exif = {
       author: STICKER_DATA.split(";")[1] || "",
       packname: message.senderName,
       categories: STICKER_DATA.split(";")[2] || "😂",
-      android: "https://github.com/proboy315/ProBoy-MD/",
-      ios: "https://github.com/proboy315/ProBoy-MD/",
+      android: "https://github.com/souravkl11/Raganork-md/",
+      ios: "https://github.com/souravkl11/Raganork-md/",
     };
+
+    // handle album
+    if (message.reply_message.album) {
+      const albumData = await message.reply_message.download();
+      const allFiles = [...(albumData.images || []), ...(albumData.videos || [])];
+      if (allFiles.length === 0) return await message.send("_No media in album_");
+
+      await message.send(`_Converting ${allFiles.length} stickers..._`);
+      for (const file of allFiles) {
+        try {
+          const isVideo = albumData.videos?.includes(file);
+          const stickerFile = fs.readFileSync(
+            await addExif(
+              await sticker(file, isVideo ? "video" : "image"),
+              exif
+            )
+          );
+          await message.sendMessage(stickerFile, "sticker", {
+            quoted: message.quoted,
+          });
+        } catch (err) {
+          console.error("Failed to convert album sticker:", err);
+        }
+      }
+      return;
+    }
+
+    var savedFile = await message.reply_message.download();
     if (message.reply_message.image === true) {
       return await message.sendMessage(
         fs.readFileSync(await addExif(await sticker(savedFile), exif)),
@@ -159,7 +184,6 @@ Module(
 Module(
   {
     pattern: "mp3 ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: Lang.MP3_DESC,
   },
@@ -168,11 +192,43 @@ Module(
       !message.reply_message ||
       (!message.reply_message.video &&
         !message.reply_message.audio &&
-        !message.reply_message.document)
+        !message.reply_message.document &&
+        !message.reply_message.album)
     )
       return await message.sendReply(Lang.MP3_NEED_REPLY);
-    //let { seconds } = message.quoted?.message?.[Object.keys(message.quoted?.message)?.[0]];
-    //if (seconds > 120) await message.sendReply(`_Alert: Duration more than 2 mins. This process may fail or take much more time!_`);
+
+    // handle album
+    if (message.reply_message.album) {
+      const albumData = await message.reply_message.download();
+      const videoFiles = albumData.videos || [];
+      
+      if (videoFiles.length === 0) {
+        return await message.send("_No video files in album. MP3 requires video/audio files._");
+      }
+
+      await message.send(`_Converting ${videoFiles.length} files to mp3..._`);
+      for (let i = 0; i < videoFiles.length; i++) {
+        try {
+          const file = videoFiles[i];
+          const outputPath = getTempPath(`album_${i}.mp3`);
+          await new Promise((resolve, reject) => {
+            ffmpeg(file)
+              .save(outputPath)
+              .on("end", resolve)
+              .on("error", reject);
+          });
+          await message.sendMessage(
+            fs.readFileSync(outputPath),
+            "audio",
+            { quoted: message.quoted }
+          );
+        } catch (err) {
+          console.error("Failed to convert album mp3:", err);
+        }
+      }
+      return;
+    }
+
     let savedFile = await message.reply_message.download();
     ffmpeg(savedFile)
       .save(getTempPath("tomp3.mp3"))
@@ -187,14 +243,48 @@ Module(
 );
 Module(
   {
-    pattern: "slow ?(.*)",
-    fromMe: w,
+    pattern: "slow",
     use: "edit",
     desc: "Slows down music & decreases pitch. For making slowed+reverb audios",
   },
   async (message, match) => {
     if (message.reply_message === false)
       return await message.sendReply(Lang.MP3_NEED_REPLY);
+
+    // handle album
+    if (message.reply_message.album) {
+      const albumData = await message.reply_message.download();
+      const videoFiles = albumData.videos || [];
+      
+      if (videoFiles.length === 0) {
+        return await message.send("_No video files in album. Slow requires video/audio files._");
+      }
+
+      await message.send(`_Slowing ${videoFiles.length} files..._`);
+      for (let i = 0; i < videoFiles.length; i++) {
+        try {
+          const file = videoFiles[i];
+          const outputPath = getTempPath(`album_slow_${i}.mp3`);
+          await new Promise((resolve, reject) => {
+            ffmpeg(file)
+              .audioFilter("atempo=0.5")
+              .outputOptions(["-y", "-af", "asetrate=44100*0.9"])
+              .save(outputPath)
+              .on("end", resolve)
+              .on("error", reject);
+          });
+          await message.sendMessage(
+            fs.readFileSync(outputPath),
+            "audio",
+            { quoted: message.quoted }
+          );
+        } catch (err) {
+          console.error("Failed to slow album audio:", err);
+        }
+      }
+      return;
+    }
+
     var { seconds } =
       message.quoted.message[Object.keys(message.quoted.message)[0]];
     if (seconds > 120)
@@ -220,13 +310,47 @@ Module(
 Module(
   {
     pattern: "sped ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: "Speeds up music & increases pitch. For making sped-up+reverb audios",
   },
   async (message, match) => {
     if (message.reply_message === false)
       return await message.sendReply(Lang.MP3_NEED_REPLY);
+
+    // handle album
+    if (message.reply_message.album) {
+      const albumData = await message.reply_message.download();
+      const videoFiles = albumData.videos || [];
+      
+      if (videoFiles.length === 0) {
+        return await message.send("_No video files in album. Sped requires video/audio files._");
+      }
+
+      await message.send(`_Speeding ${videoFiles.length} files..._`);
+      for (let i = 0; i < videoFiles.length; i++) {
+        try {
+          const file = videoFiles[i];
+          const outputPath = getTempPath(`album_sped_${i}.mp3`);
+          await new Promise((resolve, reject) => {
+            ffmpeg(file)
+              .audioFilter("atempo=0.5")
+              .outputOptions(["-y", "-af", "asetrate=44100*1.2"])
+              .save(outputPath)
+              .on("end", resolve)
+              .on("error", reject);
+          });
+          await message.sendMessage(
+            fs.readFileSync(outputPath),
+            "audio",
+            { quoted: message.quoted }
+          );
+        } catch (err) {
+          console.error("Failed to speed album audio:", err);
+        }
+      }
+      return;
+    }
+
     var { seconds } =
       message.quoted.message[Object.keys(message.quoted.message)[0]];
     if (seconds > 120)
@@ -252,13 +376,35 @@ Module(
 Module(
   {
     pattern: "bass ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: Lang.BASS_DESC,
   },
   async (message, match) => {
     if (message.reply_message === false)
       return await message.sendReply(Lang.BASS_NEED_REPLY);
+
+    // handle album
+    if (message.reply_message.album) {
+      const albumData = await message.reply_message.download();
+      const videoFiles = albumData.videos || [];
+      
+      if (videoFiles.length === 0) {
+        return await message.send("_No video files in album. Bass requires video/audio files._");
+      }
+
+      await message.send(`_Adding bass to ${videoFiles.length} files..._`);
+      for (const file of videoFiles) {
+        try {
+          bass(file, match[1], async function (audio) {
+            await message.sendMessage(audio, "audio", { quoted: message.data });
+          });
+        } catch (err) {
+          console.error("Failed to add bass to album audio:", err);
+        }
+      }
+      return;
+    }
+
     var savedFile = await message.reply_message.download();
     bass(savedFile, match[1], async function (audio) {
       await message.sendMessage(audio, "audio", { quoted: message.data });
@@ -268,7 +414,6 @@ Module(
 Module(
   {
     pattern: "photo ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: Lang.PHOTO_DESC,
   },
@@ -287,7 +432,6 @@ Module(
 Module(
   {
     pattern: "attp ?(.*)",
-    fromMe: w,
     use: "utility",
     desc: "Text to animated sticker",
   },
@@ -298,8 +442,8 @@ Module(
       author: STICKER_DATA.split(";")[1] || "",
       packname: message.senderName,
       categories: STICKER_DATA.split(";")[2] || "😂",
-      android: "https://github.com/proboy315/ProBoy-MD/",
-      ios: "https://github.com/proboy315/ProBoy-MD/",
+      android: "https://github.com/souravkl11/Raganork-md/",
+      ios: "https://github.com/souravkl11/Raganork-md/",
     };
     await message.sendMessage(
       fs.readFileSync(await addExif(result, exif)),
@@ -310,7 +454,6 @@ Module(
 Module(
   {
     pattern: "tts ?(.*)",
-    fromMe: w,
     desc: Lang.TTS_DESC,
     use: "utility",
   },
@@ -383,7 +526,6 @@ Module(
 Module(
   {
     pattern: "doc ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: "Converts replied media to document format",
   },
@@ -398,11 +540,45 @@ Module(
       !message.reply_message.video &&
       !message.reply_message.audio &&
       !message.reply_message.sticker &&
-      !message.reply_message.document
+      !message.reply_message.document &&
+      !message.reply_message.album
     ) {
       return await message.send(
         "_Reply to a media file (image, video, audio, sticker, or document)_"
       );
+    }
+
+    // handle album
+    if (message.reply_message.album) {
+      const albumData = await message.reply_message.download();
+      const allFiles = [...(albumData.images || []), ...(albumData.videos || [])];
+      if (allFiles.length === 0) return await message.send("_No media in album_");
+
+      await message.send(`_Converting ${allFiles.length} files to documents..._`);
+      for (let i = 0; i < allFiles.length; i++) {
+        try {
+          const filePath = allFiles[i];
+          const stream = fs.createReadStream(filePath);
+          var randomHash = Math.random().toString(36).substring(2, 8);
+          var fileName = match[1] || `album_${i}_${randomHash}`;
+          var mimetype = "application/octet-stream";
+
+          if (!fileName.includes(".")) {
+            const ext = filePath.split(".").pop();
+            if (ext) fileName += `.${ext}`;
+          }
+
+          await message.sendMessage({ stream: stream }, "document", {
+            quoted: message.quoted,
+            fileName: fileName,
+            mimetype: mimetype,
+            caption: "_Converted to document_",
+          });
+        } catch (err) {
+          console.error("Failed to convert album file to document:", err);
+        }
+      }
+      return;
     }
 
     try {
@@ -471,7 +647,6 @@ Module(
 Module(
   {
     pattern: "upload ?(.*)",
-    fromMe: w,
     use: "utility",
     desc: "Downloads file from URL and sends as document",
   },
@@ -554,7 +729,6 @@ Module(
 Module(
   {
     pattern: "square ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: "Crops video/image to 1:1 aspect ratio (square format)",
   },
@@ -643,7 +817,6 @@ Module(
 Module(
   {
     pattern: "resize ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: "Change video/image aspect ratio. Usage: .resize 16:9, .resize 9:16, .resize 4:3, .resize 21:9",
   },
@@ -775,7 +948,6 @@ Module(
 Module(
   {
     pattern: "compress ?(.*)",
-    fromMe: w,
     use: "edit",
     desc: "Compress video/image by percentage. Usage: .compress 50 (50% compression), .compress 80 (80% compression)",
   },
@@ -907,4 +1079,3 @@ Module(
     }
   }
 );
-
