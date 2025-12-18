@@ -29,6 +29,7 @@ Module(
   },
   async (message, match) => {
     let mediaLinks = match[1] || message.reply_message?.text;
+    if (mediaLinks.startsWith("ll")) return;
     if (!mediaLinks)
       return await message.sendReply("_*Need Instagram link(s)*_");
 
@@ -90,7 +91,7 @@ Module(
       if (allMediaUrls.length === 1) {
         return await message.sendMessage(
           { url: allMediaUrls[0] },
-          /\.(jpg|jpeg|png|webp)(\?|$)/i.test(allMediaUrls[0])
+          /\.(jpg|jpeg|png|webp|heic)(\?|$)/i.test(allMediaUrls[0])
             ? "image"
             : "video",
           {
@@ -101,7 +102,7 @@ Module(
 
       // send as album
       const albumObject = allMediaUrls.map((mediaUrl) => {
-        return /\.(jpg|jpeg|png|webp)(\?|$)/i.test(mediaUrl)
+        return /\.(jpg|jpeg|png|webp|heic)(\?|$)/i.test(mediaUrl)
           ? { image: mediaUrl }
           : { video: mediaUrl };
       });
