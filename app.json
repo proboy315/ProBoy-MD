@@ -1,0 +1,19 @@
+{
+  "name": "ProBoy-Md",
+  "description": "WhatsApp MD bot (Baileys)",
+  "repository": "https://github.com/proboy315/ProBoy-MD",
+  "keywords": ["whatsapp", "baileys", "bot", "node"],
+  "buildpacks": [
+    {
+      "url": "https://github.com/heroku/heroku-buildpack-nodejs.git"
+    }
+  ],
+  "env": {
+    "SESSION_ID": {
+      "description": "ProBoy-MD session string (e.g. ProBoy-MD!<base64_compressed_data>)",
+      "required": true,
+      "value": ""
+    }
+  }
+}
+
