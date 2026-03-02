@@ -21,7 +21,7 @@ module.exports = {
     // Bot Behavior
     selfMode: false, // Private mode - only owner can use commands
     autoRead: false,
-    autoTyping: false,
+    autoTyping: true,
     autoBio: false,
     autoSticker: false,
     autoReact: false,
