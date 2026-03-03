@@ -24,6 +24,7 @@
         "@bochilteam/scraper-facebook": "^5.0.0",
         "@vitalets/google-translate-api": "^9.2.1",
         "@whiskeysockets/baileys": "^v7.0.0-rc.9",
+        "@mrnima/tiktok-downloader": "1.0.1",
         "axios": "^1.7.2",
         "canvas": "^3.2.1",
         "cheerio": "^1.0.0-rc.12",
