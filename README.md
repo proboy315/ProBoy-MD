@@ -1,6 +1,6 @@
 <div align="center">
 
-## Knight Bot Mini
+## ProBoy-MD 
 
 [![Made with Baileys](https://img.shields.io/badge/Made%20with-Baileys-00bcd4?style=for-the-badge)](https://github.com/WhiskeySockets/Baileys)
 [![Node.js](https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white)](https://nodejs.org/)
@@ -10,7 +10,7 @@
 
 </div>
 
-Knight Bot Mini is a WhatsApp MD bot built on top of the **Baileys** library.  
+ProBoy-MD is a WhatsApp MD bot built on top of the **Baileys** library.  
 It’s designed to be fast, lightweight, and easy to customize without touching the core code.  
 This project is **fully open source** — you can modify it, rebrand it, and make your **own bot** from this codebase **free of cost**, without needing any permission from our side.  
 All commands and the overall structure are written in a way that makes customization (bot image, prefix, name, features, etc.) as easy as possible.
@@ -32,13 +32,13 @@ All commands and the overall structure are written in a way that makes customiza
 
 <div align="center">
 
-<a href="https://github.com/mruniquehacker/Knightbot-Mini/fork" target="_blank">
+<a href="https://github.com/proboy315/ProBoy-MD/fork" target="_blank">
   <img src="https://img.shields.io/badge/Fork%20Repository-GitHub-181717?style=for-the-badge&logo=github&logoColor=white" alt="Fork on GitHub">
 </a>
 
 </div>
 
-> This creates your own copy of `Knightbot-Mini` under your GitHub account.
+> This creates your own copy of `ProBoy-MD` under your GitHub account.
 
 ---
 
@@ -48,7 +48,7 @@ Deploy a small helper to generate a **pair code** and obtain your session string
 
 <div align="center">
 
-<a href="https://knight-bot-paircode.onrender.com/" target="_blank">
+<a href="https://ProBoy-PAIR.onrender.com/" target="_blank">
   <img src="https://img.shields.io/badge/Generate-Pair%20Code-blueviolet?style=for-the-badge" alt="Generate Pair Code">
 </a>
 
@@ -57,13 +57,13 @@ Deploy a small helper to generate a **pair code** and obtain your session string
 After scanning, you will receive a **session string** starting with:
 
 ```text
-KnightBot!H4....
+ProBoy-MD!H4....
 ```
 
 Copy that full string and paste it into `config.js`:
 
 ```js
-sessionID: 'KnightBot!H4.....'
+sessionID: 'ProBoy-MD!H4.....'
 ```
 
 Or set it via the `SESSION_ID` environment variable when hosting.
@@ -82,12 +82,6 @@ Or set it via the `SESSION_ID` environment variable when hosting.
 
 For a full step‑by‑step deployment tutorial (panels / VPS / Heroku), add or update your YouTube guide here:
 
-<div align="center">
-  <a href="https://youtu.be/4PQcn-qqrcE">
-    <img src="https://img.shields.io/badge/Deploy Tutorial-dc3545?style=for-the-badge&logo=youtube" alt="YouTube Link"/>
-  </a>
-</div>
-
 ---
 
 ## 🛠 Local Setup
@@ -95,8 +89,8 @@ For a full step‑by‑step deployment tutorial (panels / VPS / Heroku), add or 
 ### 1️⃣ Clone the repository
 
 ```bash
-git clone https://github.com/mruniquehacker/Knightbot-Mini.git
-cd Knightbot-Mini
+git clone https://github.com/proboy315/ProBoy-MD.git
+cd ProBoy-MD 
 ```
 
 ### 2️⃣ Install dependencies
@@ -112,7 +106,7 @@ Edit `config.js`:
 - **Option A: Use session string**
 
   ```js
-  sessionID: 'KnightBot!H4.....'
+  sessionID: 'ProBoy-MD!H4.....'
   ```
 
 - **Option B: Scan QR**
