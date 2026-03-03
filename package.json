@@ -45,7 +45,8 @@
         "ruhend-scraper": "^9.0.8",
         "sharp": "^0.33.4",
         "yt-search": "^2.13.1",
-        "ytdl-core": "^4.11.5"
+        "ytdl-core": "^4.11.5",
+        "ab-downloader": "1.0.2"
     },
     "devDependencies": {
         "nodemon": "^3.1.0"
