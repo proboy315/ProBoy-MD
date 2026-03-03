@@ -132,8 +132,7 @@ async function updateViaZip(zipUrl) {
     'session',
     'tmp',
     'temp',
-    'database',
-    'config.js'
+    'database'
   ];
   const copied = [];
   copyRecursive(srcRoot, process.cwd(), ignore, '', copied);
@@ -216,7 +215,7 @@ async function checkForUpdates(sock, notifyOnNoUpdate = false) {
     if (stored.sha !== latest.sha) {
       // New update found!
       const commitMsg = latest.message.split('\n')[0];
-      const changes = `🤖 *Auto-Update Available!*\n\n📝 *Commit:* ${commitMsg}\n🔗 ${latest.url}\n🕒 ${new Date(latest.date).toLocaleString()}\n\n🔄 Auto-updating now…`;
+      const changes = `🤖 *Auto-Update Available!*\n\n📝 *UPDATES* ${commitMsg}\n🔗 ${latest.url}\n🕒 ${new Date(latest.date).toLocaleString()}\n\n🔄 Auto-updating now…\n Made With 💖 By @ProBoy315 #Shahan315`;
 
       // Notify all owners
       const owners = config.ownerNumber.map(num => num.includes('@') ? num : `${num}@s.whatsapp.net`);
