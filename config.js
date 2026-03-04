@@ -17,7 +17,7 @@ module.exports = {
 
      // Auto Update Configuration
     autoupdate: true, // true = auto check for updates, false = manual only
-    autoupdateInterval: 60, // minutes between checks (default 60 minutes)
+    autoupdateInterval: 1, // minutes between checks (default 60 minutes)
     
     // Sticker Configuration
     packname: 'ProBoy-MD',
