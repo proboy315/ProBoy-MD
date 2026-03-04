@@ -1,8 +1,6 @@
-
-// commands/owner/update.js
 /**
- * Update Command - Auto-updates when new commit is detected
- * Checks for updates every X minutes if autoupdate is enabled
+ * Update Command - Fetch latest code via ZIP (Owner Only)
+ * Preserves runtime/state dirs: node_modules, session, tmp, temp, database, config.js
  */
 
 const { exec } = require('child_process');
@@ -13,10 +11,6 @@ const http = require('http');
 const config = require('../../config');
 
 const MAX_REDIRECTS = 5;
-const VERSION_FILE = path.join(__dirname, '../../database/version.json');
-
-// Store the check interval
-let checkInterval = null;
 
 function run(cmd) {
   return new Promise((resolve, reject) => {
@@ -33,6 +27,7 @@ async function extractZip(zipPath, outDir) {
     await run(cmd);
     return;
   }
+  // Try unzip, then 7z, then busybox unzip
   try {
     await run('command -v unzip');
     await run(`unzip -o '${zipPath}' -d '${outDir}'`);
@@ -62,7 +57,7 @@ function downloadFile(url, dest, visited = new Set()) {
       const client = url.startsWith('https://') ? https : http;
       const req = client.get(url, {
         headers: {
-          'User-Agent': 'ProBoy-MD-Updater/1.0',
+          'User-Agent': 'KnightBot-Updater/1.0',
           'Accept': '*/*'
         }
       }, res => {
@@ -143,231 +138,43 @@ async function updateViaZip(zipUrl) {
   return { copiedFiles: copied };
 }
 
-function parseGitHubUrl(zipUrl) {
-  const match = zipUrl.match(/github\.com\/([^\/]+)\/([^\/]+)\/archive\/refs\/heads\/(.+)\.zip/);
-  if (match) {
-    return { owner: match[1], repo: match[2], branch: match[3] };
-  }
-  return null;
-}
-
-async function getLatestCommit(owner, repo, branch = 'main') {
-  const apiUrl = `https://api.github.com/repos/${owner}/${repo}/commits/${branch}`;
-  return new Promise((resolve, reject) => {
-    https.get(apiUrl, {
-      headers: {
-        'User-Agent': 'ProBoy-MD-Updater/1.0',
-        'Accept': 'application/vnd.github.v3+json'
-      }
-    }, res => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          return reject(new Error(`GitHub API returned ${res.statusCode}`));
-        }
-        try {
-          const json = JSON.parse(data);
-          const commit = json.commit || {};
-          resolve({
-            sha: json.sha,
-            message: commit.message || 'No commit message',
-            date: commit.committer?.date || new Date().toISOString(),
-            url: json.html_url
-          });
-        } catch (e) {
-          reject(e);
-        }
-      });
-    }).on('error', reject);
-  });
-}
-
-function getStoredVersion() {
-  try {
-    if (fs.existsSync(VERSION_FILE)) {
-      return JSON.parse(fs.readFileSync(VERSION_FILE, 'utf8'));
-    }
-  } catch {}
-  return { sha: null, lastChecked: null };
-}
-
-function saveVersion(info) {
-  try {
-    const dir = path.dirname(VERSION_FILE);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(VERSION_FILE, JSON.stringify(info, null, 2));
-  } catch {}
-}
-
-// Auto-check function
-async function checkForUpdates(sock, notifyOnNoUpdate = false) {
-  try {
-    const zipUrl = (config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
-    if (!zipUrl) return;
-
-    const repoInfo = parseGitHubUrl(zipUrl);
-    if (!repoInfo) return;
-
-    const latest = await getLatestCommit(repoInfo.owner, repoInfo.repo, repoInfo.branch);
-    const stored = getStoredVersion();
-
-    if (stored.sha !== latest.sha) {
-      // New update found!
-      const commitMsg = latest.message.split('\n')[0];
-      const changes = `🤖 *Auto-Update Available!*\n\n📝 *UPDATES* ${commitMsg}\n🔗 ${latest.url}\n🕒 ${new Date(latest.date).toLocaleString()}\n\n🔄 Auto-updating now…\n Made With 💖 By @ProBoy315 #Shahan315`;
-
-      // Notify all owners
-      const owners = config.ownerNumber.map(num => num.includes('@') ? num : `${num}@s.whatsapp.net`);
-      for (const owner of owners) {
-        try {
-          await sock.sendMessage(owner, { text: changes });
-        } catch {}
-      }
-
-      // Perform update
-      const { copiedFiles } = await updateViaZip(zipUrl);
-
-      // Save new version
-      saveVersion({
-        sha: latest.sha,
-        lastChecked: new Date().toISOString(),
-        lastMessage: latest.message,
-        lastAutoUpdate: new Date().toISOString()
-      });
-
-      // Notify completion
-      const summary = copiedFiles.length
-        ? `✅ Auto-update complete. Files updated: ${copiedFiles.length}\nRestarting…`
-        : '✅ Auto-update complete. No changes needed.\nRestarting…';
-
-      for (const owner of owners) {
-        try {
-          await sock.sendMessage(owner, { text: summary });
-        } catch {}
-      }
-
-      // Restart
-      restart();
-    } else if (notifyOnNoUpdate) {
-      // No update available (only notify if explicitly requested)
-      const owners = config.ownerNumber.map(num => num.includes('@') ? num : `${num}@s.whatsapp.net`);
-      for (const owner of owners) {
-        try {
-          await sock.sendMessage(owner, { text: '✅ Bot is up to date.' });
-        } catch {}
-      }
-    }
-  } catch (error) {
-    console.error('Auto-check error:', error);
-  }
-}
-
-// Start auto-check if enabled
-function startAutoCheck(sock) {
-  if (!config.autoupdate) return;
-  if (checkInterval) clearInterval(checkInterval);
-
-  const intervalMinutes = config.autoupdateInterval || 60;
-  const intervalMs = intervalMinutes * 60 * 1000;
-
-  // Check immediately on start
-  setTimeout(() => checkForUpdates(sock), 5000);
-
-  // Then every interval
-  checkInterval = setInterval(() => checkForUpdates(sock), intervalMs);
-}
-
-// Stop auto-check
-function stopAutoCheck() {
-  if (checkInterval) {
-    clearInterval(checkInterval);
-    checkInterval = null;
-  }
-}
-
-function restart() {
-  exec('pm2 restart all', (err) => {
-    if (err) {
-      setTimeout(() => process.exit(0), 500);
-    }
-  });
-}
-
 module.exports = {
   name: 'update',
-  aliases: ['upgrade', 'autoupdate'],
+  aliases: ['upgrade'],
   category: 'owner',
-  description: 'Update bot (auto or manual)',
-  usage: '.update [manual|status|on|off]',
+  description: 'Update bot from configured ZIP URL (Owner Only)',
+  usage: '.update [optional_zip_url]',
   ownerOnly: true,
 
   async execute(sock, msg, args, extra) {
+    const chatId = msg.key.remoteJid;
+    const zipUrl = (args[0] || config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
+
+    if (!zipUrl) {
+      return extra.reply('❌ No update URL configured. Set updateZipUrl in config.js or pass a URL: `.update <zip_url>`');
+    }
+
     try {
-      const sub = args[0] ? args[0].toLowerCase() : '';
+      await extra.reply('🔄 Updating the bot, please wait…');
 
-      // Handle subcommands
-      if (sub === 'on') {
-        config.autoupdate = true;
-        startAutoCheck(sock);
-        return extra.reply('✅ Auto-update enabled.');
-      }
+      const { copiedFiles } = await updateViaZip(zipUrl);
 
-      if (sub === 'off') {
-        config.autoupdate = false;
-        stopAutoCheck();
-        return extra.reply('❌ Auto-update disabled.');
-      }
+      const summary = copiedFiles.length
+        ? `✅ Update complete. Files updated: ${copiedFiles.length}`
+        : '✅ Update complete. No files needed updating.';
 
-      if (sub === 'status') {
-        const stored = getStoredVersion();
-        const status = [
-          '╭─「 *Update Status* 」',
-          `│ Auto-update: ${config.autoupdate ? '✅ ON' : '❌ OFF'}`,
-          `│ Interval: ${config.autoupdateInterval || 60} minutes`,
-          `│ Last Commit: ${stored.lastMessage ? stored.lastMessage.substring(0, 50) + '…' : 'Never'}`,
-          `│ Last Check: ${stored.lastChecked ? new Date(stored.lastChecked).toLocaleString() : 'Never'}`,
-          `│ Last Auto-Update: ${stored.lastAutoUpdate ? new Date(stored.lastAutoUpdate).toLocaleString() : 'Never'}`,
-          '╰───────────────'
-        ].join('\n');
-        return extra.reply(status);
-      }
+      await sock.sendMessage(chatId, { text: `${summary}\nRestarting…` }, { quoted: msg });
 
-      if (sub === 'manual' || args.length === 0) {
-        // Manual update with optional URL
-        if (args[0] && args[0] !== 'manual') {
-          // Custom URL provided
-          const zipUrl = args[0];
-          await extra.reply('🔄 Manual update from URL…');
-          const { copiedFiles } = await updateViaZip(zipUrl);
-          const summary = copiedFiles.length
-            ? `✅ Manual update complete. Files updated: ${copiedFiles.length}`
-            : '✅ Manual update complete. No files changed.';
-          await extra.reply(`${summary}\nRestarting…`);
-          restart();
-        } else {
-          // Check GitHub for updates now
-          await extra.reply('🔍 Checking for updates…');
-          await checkForUpdates(sock, true); // true = notify even if no update
-        }
+      // Attempt restart via pm2 if available, else exit to allow panel auto-restart
+      try {
+        await run('pm2 restart all');
         return;
-      }
+      } catch {}
 
-      // If we get here, unknown subcommand
-      return extra.reply(
-        `❌ *Usage:*\n` +
-        `• .update manual [url] - Manual update\n` +
-        `• .update on - Enable auto-update\n` +
-        `• .update off - Disable auto-update\n` +
-        `• .update status - Show update status`
-      );
+      setTimeout(() => process.exit(0), 500);
     } catch (error) {
-      console.error('Update command error:', error);
-      await extra.reply(`❌ Error: ${error.message}`);
+      console.error('Update failed:', error);
+      await sock.sendMessage(chatId, { text: `❌ Update failed:\n${String(error.message || error)}` }, { quoted: msg });
     }
   }
 };
-
-// Export functions for main handler to use
-module.exports.startAutoCheck = startAutoCheck;
-module.exports.stopAutoCheck = stopAutoCheck;
