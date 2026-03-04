@@ -87,7 +87,7 @@ module.exports = {
     social: {
       github: 'https://github.com/proboy315',
       instagram: 'https://instagram.com/itx___proboy',
-      youtube: 'http://youtube.com/notavailible'
+      Tiktok: 'https://tiktok.com/@itx_ProBoy'
     }
 };
   
