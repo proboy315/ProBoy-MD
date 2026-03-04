@@ -15,9 +15,6 @@ module.exports = {
     newsletterJid: '120363422946163295@newsletter', // Newsletter JID for menu forwarding
     updateZipUrl: 'https://github.com/proboy315/ProBoy-MD/archive/refs/heads/main.zip', // URL to latest code zip for .update command
 
-     // Auto Update Configuration
-    autoupdate: true, // true = auto check for updates, false = manual only
-    autoupdateInterval: 1, // minutes between checks (default 60 minutes)
     
     // Sticker Configuration
     packname: 'ProBoy-MD',
