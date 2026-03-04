@@ -10,13 +10,7 @@ const { jidDecode, jidEncode } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
-// handler.js (ya jahan bot initialize hota hai)
-const updatePlugin = require('./commands/owner/update');
 
-// Jab bot ready ho:
-if (config.autoupdate) {
-    updatePlugin.startAutoCheck(sock);
-}
 // Group metadata cache to prevent rate limiting
 const groupMetadataCache = new Map();
 const CACHE_TTL = 60000; // 1 minute cache
