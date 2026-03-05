@@ -212,7 +212,7 @@ function sessionExists() {
 // Function to get session from user
 async function getSessionFromUser() {
   console.log('\n' + '='.repeat(50));
-  console.log('📱 No session found! Please provide session ID');
+  console.log('📱 No session found! Please provide Your session ID');
   console.log('='.repeat(50) + '\n');
   
   const sessionId = await askQuestion('Enter your session ID: ');
@@ -267,6 +267,7 @@ async function startBot() {
       // Continue with normal QR flow if session processing fails
     }
   }
+  console.clear()
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
   const { version } = await fetchLatestBaileysVersion();
@@ -553,7 +554,7 @@ async function startBot() {
 
   return sock;
 }
-
+console.clear()
 // Start the bot
 console.log('🚀 Starting WhatsApp MD Bot...\n');
 console.log(`📦 Bot Name: ${config.botName}`);
