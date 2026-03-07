@@ -208,19 +208,20 @@ function sessionExists() {
   const credsPath = path.join(sessionFolder, 'creds.json');
   return fs.existsSync(credsPath);
 }
-
+console.clear()
 // Function to get session from user
 async function getSessionFromUser() {
   console.log('\n' + '='.repeat(50));
   console.log('📱 No session found! Please provide Your session ID');
   console.log('='.repeat(50) + '\n');
-  
+  console.clear()
   const sessionId = await askQuestion('Enter your session ID: ');
   rl.close();
   
   if (!sessionId || sessionId.trim() === '') {
     console.log('❌ No session ID provided. Exiting...');
     process.exit(1);
+    
   }
   
   return sessionId.trim();
