@@ -2,6 +2,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { exec } = require('child_process');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const config = require('../../config');
 
@@ -21,17 +22,27 @@ function gistToRawUrl(gistUrl) {
     if (url.hostname === 'gist.github.com') {
       const pathParts = url.pathname.split('/').filter(p => p);
       if (pathParts.length >= 2) {
-        // pathParts = [username, gistId, ...]
         const user = pathParts[0];
         const gistId = pathParts[1];
         return `https://gist.githubusercontent.com/${user}/${gistId}/raw`;
       }
     }
-    // If it's already a raw URL or other, return as is
     return gistUrl;
   } catch {
     return gistUrl;
   }
+}
+
+/**
+ * Attempt to restart the bot using PM2; if that fails, exit the process.
+ */
+function restartBot() {
+  exec('pm2 restart all', (err) => {
+    if (err) {
+      console.log('PM2 not found, exiting process...');
+      setTimeout(() => process.exit(0), 1000);
+    }
+  });
 }
 
 module.exports = {
@@ -39,17 +50,27 @@ module.exports = {
   aliases: ['plugin', 'addplugin'],
   category: 'owner',
   description: 'Install a plugin from a GitHub Gist URL or by replying to a plugin file',
-  usage: '.install <gist_url>  OR  reply to a .js file with .install',
-  ownerOnly: true, // Only owners can install plugins (file system access)
+  usage: '.install [-r|--restart] <gist_url>  OR  reply to a .js file with .install [-r]',
+  ownerOnly: true,
 
   async execute(sock, msg, args, extra) {
     try {
+      // Check for restart flag
+      let autoRestart = false;
+      const filteredArgs = args.filter(arg => {
+        if (arg === '-r' || arg === '--restart') {
+          autoRestart = true;
+          return false;
+        }
+        return true;
+      });
+
       let content = null;
       let method = null;
 
       // --- Method 1: URL from arguments ---
-      if (args.length > 0) {
-        const inputUrl = args[0].trim();
+      if (filteredArgs.length > 0) {
+        const inputUrl = filteredArgs[0].trim();
         const rawUrl = gistToRawUrl(inputUrl);
         method = 'url';
         await extra.react('⏳');
@@ -77,7 +98,6 @@ module.exports = {
         method = 'reply';
         await extra.react('⏳');
 
-        // Download the file using Baileys' official function
         const buffer = await downloadMediaMessage(
           { key: msg.key, message: quoted },
           'buffer',
@@ -98,11 +118,11 @@ module.exports = {
         throw new Error(`Invalid or missing category. Allowed: ${validCategories.join(', ')}`);
       }
 
-      // Determine target folder
+      // Determine target folder and file
       const targetDir = path.join(__dirname, '..', pluginInfo.category);
       const targetFile = path.join(targetDir, `${pluginInfo.name}.js`);
 
-      // Create folder if it doesn't exist
+      // Create folder if needed
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
@@ -110,7 +130,18 @@ module.exports = {
       // Write file
       fs.writeFileSync(targetFile, content, 'utf8');
 
-      // Build success message with extracted details
+      // --- Test the plugin by requiring it (catch errors early) ---
+      try {
+        // Clear the require cache to force a fresh load
+        delete require.cache[require.resolve(targetFile)];
+        require(targetFile);
+      } catch (loadErr) {
+        // Plugin is invalid: delete it and abort
+        fs.unlinkSync(targetFile);
+        throw new Error(`Plugin failed to load: ${loadErr.message}`);
+      }
+
+      // Build success message
       const details = [
         '✅ *Plugin installed successfully!*',
         '',
@@ -136,10 +167,16 @@ module.exports = {
       if (pluginInfo.botAdminNeeded) flags.push('🤖 Bot admin needed');
       if (flags.length) details.push(`🚩 *Flags:* ${flags.join(' · ')}`);
 
-      details.push('', '🔄 Restart the bot to load the new command.');
-
-      await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
-      await extra.react('✅');
+      if (autoRestart) {
+        details.push('', '♻️ Auto‑restarting now...');
+        await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
+        await extra.react('✅');
+        restartBot(); // This will exit the process after a short delay
+      } else {
+        details.push('', '🔄 Please restart the bot to load the new command.');
+        await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
+        await extra.react('✅');
+      }
 
     } catch (error) {
       console.error('Install error:', error);
@@ -156,33 +193,28 @@ module.exports = {
 };
 
 /**
- * Naive parser to extract plugin metadata from the exported object.
- * Expects the plugin to follow: module.exports = { name: '...', category: '...', ... }
+ * Parse plugin metadata from the exported object.
  */
 function parsePlugin(content) {
   const info = {};
 
-  // Find module.exports block
   const exportMatch = content.match(/module\.exports\s*=\s*({[\s\S]*?})/);
   if (!exportMatch) return info;
 
   const objStr = exportMatch[1];
 
-  // Helper to extract string value
   const extractString = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*['"]([^'"]+)['"]`);
     const match = objStr.match(regex);
     return match ? match[1] : null;
   };
 
-  // Helper to extract boolean
   const extractBoolean = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*(true|false)`);
     const match = objStr.match(regex);
     return match ? match[1] === 'true' : false;
   };
 
-  // Helper to extract array of strings (aliases)
   const extractArray = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*\\[([\\s\\S]*?)\\]`);
     const match = objStr.match(regex);
@@ -202,8 +234,6 @@ function parsePlugin(content) {
   info.description = extractString('description');
   info.usage = extractString('usage');
   info.aliases = extractArray('aliases');
-
-  // Flags
   info.ownerOnly = extractBoolean('ownerOnly');
   info.modOnly = extractBoolean('modOnly');
   info.groupOnly = extractBoolean('groupOnly');
@@ -212,4 +242,4 @@ function parsePlugin(content) {
   info.botAdminNeeded = extractBoolean('botAdminNeeded');
 
   return info;
-}
+          }
