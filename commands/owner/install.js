@@ -2,6 +2,7 @@
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
+const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const config = require('../../config');
 
 // Allowed categories (must match subfolder names in commands/)
@@ -9,6 +10,29 @@ const validCategories = [
   'admin', 'ai', 'anime', 'fun', 'general',
   'group', 'media', 'owner', 'textmaker', 'utility'
 ];
+
+/**
+ * Convert a GitHub Gist URL to its raw content URL.
+ * Example: https://gist.github.com/user/123abc → https://gist.githubusercontent.com/user/123abc/raw
+ */
+function gistToRawUrl(gistUrl) {
+  try {
+    const url = new URL(gistUrl);
+    if (url.hostname === 'gist.github.com') {
+      const pathParts = url.pathname.split('/').filter(p => p);
+      if (pathParts.length >= 2) {
+        // pathParts = [username, gistId, ...]
+        const user = pathParts[0];
+        const gistId = pathParts[1];
+        return `https://gist.githubusercontent.com/${user}/${gistId}/raw`;
+      }
+    }
+    // If it's already a raw URL or other, return as is
+    return gistUrl;
+  } catch {
+    return gistUrl;
+  }
+}
 
 module.exports = {
   name: 'install',
@@ -20,32 +44,28 @@ module.exports = {
 
   async execute(sock, msg, args, extra) {
     try {
-      // Determine method: URL or reply
       let content = null;
       let method = null;
 
+      // --- Method 1: URL from arguments ---
       if (args.length > 0) {
-        // Method 1: URL (must be gist.github.com)
-        const url = args[0].trim();
-        if (!url.includes('gist.github.com')) {
-          return extra.reply('❌ Only GitHub Gist URLs are supported.\nExample: https://gist.github.com/username/123456789');
-        }
+        const inputUrl = args[0].trim();
+        const rawUrl = gistToRawUrl(inputUrl);
         method = 'url';
         await extra.react('⏳');
-        // Convert to raw URL if needed
-        const rawUrl = url.replace('github.com', 'raw.githubusercontent.com').replace('/blob/', '/');
-        // Gist raw URL format: https://gist.githubusercontent.com/username/gistid/raw/filename.js
-        // But simple replacement may not always work. Better to fetch the gist API? Simpler: just assume user provides raw URL.
-        // We'll try to fetch directly.
-        const response = await axios.get(rawUrl, { timeout: 10000 });
+
+        const response = await axios.get(rawUrl, {
+          timeout: 15000,
+          headers: { 'User-Agent': 'ProBoy-MD-Installer' }
+        });
         content = response.data;
-      } else {
-        // Method 2: Reply to a file message
+      }
+      // --- Method 2: Reply to a file message ---
+      else {
         const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
         if (!quoted) {
           return extra.reply('❌ Please reply to a `.js` file or provide a Gist URL.\n' + this.usage);
         }
-        // Check if quoted message is a document (likely a .js file)
         const doc = quoted.documentMessage;
         if (!doc) {
           return extra.reply('❌ Quoted message is not a file. Please reply to a `.js` plugin file.');
@@ -56,16 +76,20 @@ module.exports = {
         }
         method = 'reply';
         await extra.react('⏳');
-        // Download the file
-        const stream = await sock.downloadMediaMessage(msg.message.extendedTextMessage.contextInfo.quotedMessage);
-        content = stream.toString('utf8');
+
+        // Download the file using Baileys' official function
+        const buffer = await downloadMediaMessage(
+          { key: msg.key, message: quoted },
+          'buffer',
+          {},
+          { logger: undefined, reuploadRequest: sock.updateMediaMessage }
+        );
+        content = buffer.toString('utf8');
       }
 
-      if (!content) {
-        throw new Error('Failed to retrieve plugin content.');
-      }
+      if (!content) throw new Error('Failed to retrieve plugin content.');
 
-      // Parse the plugin file to extract metadata
+      // --- Parse plugin metadata ---
       const pluginInfo = parsePlugin(content);
       if (!pluginInfo.name) {
         throw new Error('Could not determine plugin name. Ensure the plugin exports a valid command object.');
@@ -78,7 +102,7 @@ module.exports = {
       const targetDir = path.join(__dirname, '..', pluginInfo.category);
       const targetFile = path.join(targetDir, `${pluginInfo.name}.js`);
 
-      // Ensure category folder exists
+      // Create folder if it doesn't exist
       if (!fs.existsSync(targetDir)) {
         fs.mkdirSync(targetDir, { recursive: true });
       }
@@ -86,7 +110,7 @@ module.exports = {
       // Write file
       fs.writeFileSync(targetFile, content, 'utf8');
 
-      // Build success message with plugin details
+      // Build success message with extracted details
       const details = [
         '✅ *Plugin installed successfully!*',
         '',
@@ -94,7 +118,7 @@ module.exports = {
         `📄 *Filename:* ${pluginInfo.name}.js`,
         `🔖 *Command:* ${pluginInfo.name}`,
       ];
-      if (pluginInfo.aliases && pluginInfo.aliases.length) {
+      if (pluginInfo.aliases?.length) {
         details.push(`🔁 *Aliases:* ${pluginInfo.aliases.join(', ')}`);
       }
       if (pluginInfo.description) {
@@ -103,7 +127,6 @@ module.exports = {
       if (pluginInfo.usage) {
         details.push(`⚙️ *Usage:* ${pluginInfo.usage}`);
       }
-      // Add flags if present
       const flags = [];
       if (pluginInfo.ownerOnly) flags.push('👑 Owner only');
       if (pluginInfo.modOnly) flags.push('🛡️ Mod only');
@@ -111,17 +134,22 @@ module.exports = {
       if (pluginInfo.privateOnly) flags.push('💬 Private only');
       if (pluginInfo.adminOnly) flags.push('🛡️ Admin only');
       if (pluginInfo.botAdminNeeded) flags.push('🤖 Bot admin needed');
-      if (flags.length) {
-        details.push(`🚩 *Flags:* ${flags.join(' · ')}`);
-      }
+      if (flags.length) details.push(`🚩 *Flags:* ${flags.join(' · ')}`);
 
       details.push('', '🔄 Restart the bot to load the new command.');
 
       await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
       await extra.react('✅');
+
     } catch (error) {
       console.error('Install error:', error);
-      await extra.reply(`❌ Installation failed: ${error.message}`);
+      let errorMsg = '❌ Installation failed: ';
+      if (error.response) {
+        errorMsg += `HTTP ${error.response.status} – ${error.response.statusText}`;
+      } else {
+        errorMsg += error.message;
+      }
+      await extra.reply(errorMsg);
       await extra.react('❌');
     }
   }
@@ -129,8 +157,7 @@ module.exports = {
 
 /**
  * Naive parser to extract plugin metadata from the exported object.
- * Expects the plugin to follow the standard structure:
- * module.exports = { name: '...', category: '...', ... }
+ * Expects the plugin to follow: module.exports = { name: '...', category: '...', ... }
  */
 function parsePlugin(content) {
   const info = {};
@@ -141,7 +168,7 @@ function parsePlugin(content) {
 
   const objStr = exportMatch[1];
 
-  // Helper to extract string value for a key
+  // Helper to extract string value
   const extractString = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*['"]([^'"]+)['"]`);
     const match = objStr.match(regex);
@@ -155,13 +182,12 @@ function parsePlugin(content) {
     return match ? match[1] === 'true' : false;
   };
 
-  // Helper to extract array of strings (for aliases)
+  // Helper to extract array of strings (aliases)
   const extractArray = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*\\[([\\s\\S]*?)\\]`);
     const match = objStr.match(regex);
     if (!match) return [];
     const arrStr = match[1];
-    // Extract quoted strings
     const items = [];
     const itemRegex = /['"]([^'"]+)['"]/g;
     let itemMatch;
