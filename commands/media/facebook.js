@@ -1,7 +1,7 @@
 /**
  * Facebook Video Downloader Plugin for ProBoy‑MD
  * Uses ab-downloader's fbdown function.
- * Corrected key name: 'normal_video' (small 'n')
+ * Supports optional HD quality: .fb <url> hd
  */
 
 const { fbdown } = require('ab-downloader');
@@ -12,16 +12,21 @@ module.exports = {
     aliases: ['fb', 'fbdl'],
     category: 'media',
     description: 'Download Facebook videos',
-    usage: '.facebook <url>',
+    usage: '.facebook <url> [hd]',
 
     async execute(sock, msg, args, extra) {
         const { from, reply, react } = extra;
 
         try {
-            const url = args.join(' ').trim();
+            // First argument is the URL
+            const url = args[0];
             if (!url) {
                 return reply(`❌ Please provide a Facebook video URL.\nExample: ${this.usage}`);
             }
+
+            // Check if user wants HD (any case, any position after URL)
+            const remainingArgs = args.slice(1).join(' ').trim().toLowerCase();
+            const wantHD = remainingArgs === 'hd';
 
             await react('⏳');
 
@@ -33,17 +38,30 @@ module.exports = {
                 throw new Error('Invalid response from downloader');
             }
 
-            // Response is an object, not array (as per screenshot)
             const data = response;
 
-            // Get video URL – correct key is 'normal_video' (small 'n')
-            let videoUrl = data.normal_video || data.HD || data.Normal_video; // fallback HD and capital N just in case
+            // Determine video URL based on user's preference
+            let videoUrl;
+            if (wantHD) {
+                videoUrl = data.HD || data.hd; // check both cases just in case
+                if (!videoUrl) {
+                    // If HD requested but not available, fallback to normal
+                    videoUrl = data.normal_video || data.Normal_video;
+                    if (videoUrl) {
+                        await reply('ℹ️ HD version not available, sending normal quality instead.');
+                    }
+                }
+            } else {
+                videoUrl = data.normal_video || data.Normal_video || data.HD || data.hd;
+            }
+
             if (!videoUrl) {
                 throw new Error('No downloadable video URL found');
             }
 
             // Simple caption
-            const caption = `📘 *Facebook Video*\n\n${config.botName}`;
+            const qualityText = wantHD ? ' (HD)' : '';
+            const caption = `📘 *Facebook Video${qualityText}*\n\n${config.botName}`;
 
             // Send the video
             await sock.sendMessage(from, {
