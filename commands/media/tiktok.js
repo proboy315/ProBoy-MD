@@ -1,8 +1,6 @@
 /**
  * TikTok Downloader Plugin for ProBoy‑MD
- * Uses ab‑downloader's ttdl function.
- * Extracts username from URL if present and adds to caption.
- * No external credits – only ProBoy‑MD branding.
+ * Based on actual ab-downloader response structure
  */
 
 const { ttdl } = require('ab-downloader');
@@ -10,7 +8,6 @@ const config = require('../../config');
 
 // Helper to extract TikTok username from URL
 function extractUsername(url) {
-    // Match patterns like tiktok.com/@username or tiktok.com/@username/video/...
     const match = url.match(/tiktok\.com\/@([A-Za-z0-9_.]+)/i);
     return match ? match[1] : null;
 }
@@ -26,43 +23,29 @@ module.exports = {
         const { from, reply, react } = extra;
 
         try {
-            // Combine arguments to get the URL
             const url = args.join(' ').trim();
             if (!url) {
                 return reply(`❌ Please provide a TikTok video URL.\nExample: ${this.usage}`);
             }
 
-            await react('⏳'); // Processing
+            await react('⏳');
 
             // Fetch download data
-            const data = await ttdl(url);
+            const response = await ttdl(url);
 
             // Check if response is valid
-            if (!data || !Array.isArray(data) || data.length === 0) {
-                throw new Error('Invalid response from downloader');
+            if (!response || !response.video || !Array.isArray(response.video) || response.video.length === 0) {
+                throw new Error('Invalid response from downloader - no video URL found');
             }
 
-            const result = data[0]; // First object in array
+            // Extract video URL (first element of video array)
+            const videoUrl = response.video[0];
 
-            // Extract video URL – handle different possible structures
-            let videoUrl = null;
-            if (result.video && Array.isArray(result.video) && result.video.length > 0) {
-                // If video array contains objects with url property
-                if (typeof result.video[0] === 'object' && result.video[0].url) {
-                    videoUrl = result.video[0].url;
-                }
-                // If it's an array of strings
-                else if (typeof result.video[0] === 'string') {
-                    videoUrl = result.video[0];
-                }
-            }
-
-            if (!videoUrl) {
-                throw new Error('No downloadable video found');
-            }
+            // Extract title
+            const title = response.title || 'TikTok Video';
 
             // Build caption
-            let caption = `🎵 *${result.title || 'TikTok Video'}*`;
+            let caption = `🎵 *${title}*`;
 
             // Extract username from URL and add to caption
             const username = extractUsername(url);
@@ -70,7 +53,7 @@ module.exports = {
                 caption += `\n👤 *Username:* @${username}`;
             }
 
-            // Add bot signature (optional – remove if you don't want)
+            // Add bot signature
             caption += `\n\n${config.botName}`;
 
             // Send the video
@@ -80,7 +63,7 @@ module.exports = {
                 caption: caption.trim()
             }, { quoted: msg });
 
-            await react('✅'); // Success
+            await react('✅');
         } catch (error) {
             console.error('TikTok download error:', error);
             await reply(`❌ Failed to download: ${error.message}`);
