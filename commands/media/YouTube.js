@@ -1,40 +1,123 @@
 /**
  * YouTube Downloader Plugin for ProBoy‑MD
- * Supports both URL and search query.
- * Uses ab-downloader's youtube() for URLs, and a search API for queries.
+ * Supports both URL and search query using yt-search.
  */
 
 const { youtube } = require('ab-downloader');
-const axios = require('axios');
+const ytSearch = require('yt-search');
 const config = require('../../config');
 
 // Helper: Check if text is a YouTube URL
 function isYoutubeUrl(text) {
     const patterns = [
-        /youtube\.com\/watch\?v=/,          // Standard
-        /youtu\.be\//,                       // Shortened
-        /youtube\.com\/shorts\//,             // Shorts
-        /youtube\.com\/embed\//,               // Embed
-        /m\.youtube\.com\/watch\?v=/           // Mobile
+        /youtube\.com\/watch\?v=/,
+        /youtu\.be\//,
+        /youtube\.com\/shorts\//,
+        /youtube\.com\/embed\//,
+        /m\.youtube\.com\/watch\?v=/
     ];
     return patterns.some(pattern => pattern.test(text));
 }
 
-// Helper: Search YouTube and get top result's download URL
+// Helper: Search YouTube and get top video's URL
 async function searchYoutube(query) {
     try {
-        const searchApi = `https://apis.davidcyril.name.ng/play?query=${encodeURIComponent(query)}`;
-        const response = await axios.get(searchApi);
-        
-        if (!response.data.status || !response.data.result || !response.data.result.download_url) {
-            throw new Error('No results found');
+        const searchResult = await ytSearch(query);
+        if (!searchResult || !searchResult.videos || searchResult.videos.length === 0) {
+            throw new Error('No videos found');
         }
-        
+
+        const topVideo = searchResult.videos[0];
+        const videoUrl = topVideo.url; // e.g., https://youtube.com/watch?v=abc123
+
         return {
-            title: response.data.result.title,
-            downloadUrl: response.data.result.download_url,
-            thumbnail: response.data.result.thumbnail,
-            duration: response.data.result.duration,
+            title: topVideo.title,
+            videoUrl: videoUrl,
+            thumbnail: topVideo.thumbnail,
+            duration: topVideo.duration.timestamp,
+            author: topVideo.author.name
+        };
+    } catch (error) {
+        console.error('yt-search error:', error);
+        throw new Error('Failed to search YouTube');
+    }
+}
+
+module.exports = {
+    name: 'youtube',
+    aliases: ['yt', 'ytdl'],
+    category: 'media',
+    description: 'Download YouTube videos (supports URL or search query)',
+    usage: '.yt <url or search query>',
+
+    async execute(sock, msg, args, extra) {
+        const { from, reply, react } = extra;
+
+        try {
+            const input = args.join(' ').trim();
+            if (!input) {
+                return reply(`❌ Please provide a YouTube URL or search query.\nExample: ${this.usage}`);
+            }
+
+            await react('⏳');
+
+            let videoUrl;
+            let videoTitle;
+
+            if (isYoutubeUrl(input)) {
+                // Direct URL download
+                videoUrl = input;
+                videoTitle = 'YouTube Video'; // We'll get actual title after download
+            } else {
+                // Search query
+                const searchInfo = await searchYoutube(input);
+                videoUrl = searchInfo.videoUrl;
+                videoTitle = searchInfo.title;
+                // Optional: store author/thumbnail for later use
+            }
+
+            // Download using ab-downloader
+            const response = await youtube(videoUrl);
+
+            if (!response || typeof response !== 'object' || !response.mp4) {
+                throw new Error('Invalid response from YouTube downloader');
+            }
+
+            // Use title from search if available, else from response
+            const finalTitle = videoTitle || response.title || 'YouTube Video';
+            const author = response.author || 'Unknown';
+
+            // Build caption
+            let caption = `🎬 *${finalTitle}*`;
+            if (author !== 'Unknown') {
+                caption += `\n👤 *Author:* ${author}`;
+            }
+            caption += `\n\n${config.botName}`;
+
+            // Send video
+            await sock.sendMessage(from, {
+                video: { url: response.mp4 },
+                mimetype: 'video/mp4',
+                caption: caption,
+                contextInfo: response.thumbnail ? {
+                    externalAdReply: {
+                        title: finalTitle,
+                        body: 'YouTube Video',
+                        thumbnailUrl: response.thumbnail,
+                        mediaType: 1,
+                        renderLargerThumbnail: true
+                    }
+                } : undefined
+            }, { quoted: msg });
+
+            await react('✅');
+        } catch (error) {
+            console.error('YouTube download error:', error);
+            await reply(`❌ Failed to download: ${error.message}`);
+            await react('❌');
+        }
+    }
+};            duration: response.data.result.duration,
             views: response.data.result.views
         };
     } catch (error) {
