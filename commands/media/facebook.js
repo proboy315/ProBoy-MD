@@ -1,7 +1,7 @@
 /**
  * Facebook Video Downloader Plugin for ProBoy‑MD
  * Uses ab-downloader's fbdown function.
- * Direct download – no quality selection buttons.
+ * Corrected key name: 'normal_video' (small 'n')
  */
 
 const { fbdown } = require('ab-downloader');
@@ -28,25 +28,21 @@ module.exports = {
             // Fetch download data
             const response = await fbdown(url);
 
-            // Check if response is valid array and has first object
-            if (!Array.isArray(response) || response.length === 0 || !response[0]) {
+            // Check if response is valid
+            if (!response || typeof response !== 'object') {
                 throw new Error('Invalid response from downloader');
             }
 
-            const data = response[0]; // First object
+            // Response is an object, not array (as per screenshot)
+            const data = response;
 
-            // Get video URL – prefer Normal_video, fallback to HD
-            let videoUrl = data.Normal_video || data.HD;
+            // Get video URL – correct key is 'normal_video' (small 'n')
+            let videoUrl = data.normal_video || data.HD || data.Normal_video; // fallback HD and capital N just in case
             if (!videoUrl) {
                 throw new Error('No downloadable video URL found');
             }
 
-            // Optional: Log karo agar HD use karna paray (debugging ke liye)
-            // if (!data.Normal_video && data.HD) {
-            //     console.log('Using HD as fallback for Facebook video');
-            // }
-
-            // Simple caption – sirf aap ka bot name (ya kuch bhi chahein)
+            // Simple caption
             const caption = `📘 *Facebook Video*\n\n${config.botName}`;
 
             // Send the video
