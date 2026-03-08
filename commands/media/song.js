@@ -52,7 +52,7 @@ module.exports = {
       // Inform user
       await sock.sendMessage(chatId, {
         image: { url: video.thumbnail },
-        caption: `🎵 Downloading: *${video.title}*\n⏱ Duration: ${video.timestamp}`
+        caption: `Title:\n *${video.title}*\n⏱ Duration: ${video.timestamp}`
       }, { quoted: msg });
       
       // Try multiple APIs with fallback chain
