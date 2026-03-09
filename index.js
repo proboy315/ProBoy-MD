@@ -217,7 +217,7 @@ const createSuppressedLogger = (level = 'silent') => {
         fatal: 5
       },
       // Redact sensitive fields
-      redact: ['registrationId', 'ephemeralKeyPair', 'rootKey', 'chainKey', 'baseKey']
+            redact: ['registrationId', 'ephemeralKeyPair', 'rootKey', 'chainKey', 'baseKey']
     });
   } catch (err) {
     // Fallback to basic pino without transport
@@ -413,9 +413,6 @@ async function startBot() {
           }
           
           // Also update the config.js file to persist the change (optional)
-          // We can write back to config.js, but careful not to overwrite hardcoded values.
-          // Since we override on every start, it's not strictly necessary to write to file.
-          // But if you want to persist, we can do it.
           try {
             const configPath = path.join(__dirname, 'config.js');
             let configContent = fs.readFileSync(configPath, 'utf8');
@@ -437,8 +434,8 @@ async function startBot() {
         }
       } catch (err) {
         console.error('⚠️ Failed to auto-add bot number to owner array:', err.message);
-      }
-      // --- END AUTO ADD ---
+        }
+            // --- END AUTO ADD ---
 
       // Set bot status
       if (config.autoBio) {
@@ -562,6 +559,25 @@ async function startBot() {
     }
   });
 
+  // ==================== NEW: Message delete event for antidelete ====================
+  sock.ev.on('messages.delete', async (deleteData) => {
+    try {
+      // deleteData can be an array of keys or an object with keys
+      const items = Array.isArray(deleteData) ? deleteData : (deleteData.keys || []);
+      for (const key of items) {
+        // Call handleDelete for all commands that have it (like antidelete)
+        for (const command of handler.commands.values()) {
+          if (typeof command.handleDelete === 'function') {
+            await command.handleDelete(sock, { key });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error in delete event:', error);
+    }
+  });
+  // ==================================================================================
+
   // Message receipt updates (silently handled, no logging)
   sock.ev.on('message-receipt.update', () => {
     // Silently handle receipt updates
@@ -625,8 +641,7 @@ process.on('uncaughtException', (err) => {
 });
 
 process.on('unhandledRejection', (err) => {
-  // Handle 
-      // Handle ENOSPC errors gracefully
+  // Handle ENOSPC errors gracefully
   if (err && (err.code === 'ENOSPC' || err.errno === -28 || (err.message && err.message.includes('no space left on device')))) {
     console.warn('⚠️ ENOSPC Error in promise: No space left on device. Attempting cleanup...');
     const { cleanupOldFiles } = require('./utils/cleanup');
