@@ -471,6 +471,25 @@ const handleMessage = async (sock, msg) => {
     // Return early for non-group messages with no recognizable content
     if (!content || actualMessageTypes.length === 0) return;
     
+    // ==================== ANTIDELETE HOOK: Call handleMessage for all commands ====================
+    for (const command of commands.values()) {
+      if (typeof command.handleMessage === 'function') {
+        try {
+          await command.handleMessage(sock, msg, {
+            from,
+            sender,
+            isGroup,
+            groupMetadata,
+            reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
+            react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+          });
+        } catch (e) {
+          console.error(`Error in handleMessage of ${command.name}:`, e);
+        }
+      }
+    }
+    // ==============================================================================================
+    
     // 🔹 Button response should also check unwrapped content
     const btn = content.buttonsResponseMessage || msg.message?.buttonsResponseMessage;
     if (btn) {
@@ -478,7 +497,7 @@ const handleMessage = async (sock, msg) => {
       const displayText = btn.selectedDisplayText;
       
       // Handle button clicks by routing to commands
-      if (buttonId === 'btn_menu') {
+          if (buttonId === 'btn_menu') {
         // Execute menu command
         const menuCmd = commands.get('menu');
         if (menuCmd) {
@@ -565,8 +584,8 @@ const handleMessage = async (sock, msg) => {
         }
       }
       
-      // Anti-tag protection (check BEFORE text check, as tagall can have no text)
-      if (groupSettings.antitag && !msg.key.fromMe) {
+      // Anti-tag protection (check BEFORE text check, as tagall can have no text) 
+            if (groupSettings.antitag && !msg.key.fromMe) {
         const ctx = content.extendedTextMessage?.contextInfo;
         const mentionedJids = ctx?.mentionedJid || [];
         
@@ -644,8 +663,7 @@ const handleMessage = async (sock, msg) => {
         }
       }
     }
-    
-    // Anti-group mention protection (check BEFORE prefix check, as these are non-command messages)
+        // Anti-group mention protection (check BEFORE prefix check, as these are non-command messages)
     if (isGroup) {
       // Debug logging to confirm we're trying to call the handler
       const groupSettings = database.getGroupSettings(from);
@@ -742,7 +760,8 @@ const handleMessage = async (sock, msg) => {
     }
     
     // Auto-typing
-    if (config.autoTyping) {
+    
+       if (config.autoTyping) {
       await sock.sendPresenceUpdate('composing', from);
     }
     
@@ -875,7 +894,7 @@ const handleGroupUpdate = async (sock, update) => {
               }
               
               // Method 2: Try to fetch contact using onWhatsApp and then check store
-              if (displayName === participantNumber) {
+                            if (displayName === participantNumber) {
                 try {
                   await sock.onWhatsApp(phoneJid);
                   
@@ -988,7 +1007,7 @@ const handleGroupUpdate = async (sock, update) => {
           }
           
           // Try to get contact name from phoneNumber JID
-          if (phoneJid) {
+                    if (phoneJid) {
             try {
               // Method 1: Try to get from contact store if available
               if (sock.store && sock.store.contacts && sock.store.contacts[phoneJid]) {
@@ -1080,7 +1099,7 @@ const handleGroupUpdate = async (sock, update) => {
       }
     }
   } catch (error) {
-    // Silently handle forbidden errors and other group metadata errors
+        // Silently handle forbidden errors and other group metadata errors
     if (error.message && (
       error.message.includes('forbidden') || 
       error.message.includes('403') ||
@@ -1143,7 +1162,7 @@ const handleAntilink = async (sock, msg, groupMetadata) => {
         }
       } else {
         // Default: delete message
-        try {
+                try {
           await sock.sendMessage(from, { delete: msg.key });
           await sock.sendMessage(from, { 
             text: `🔗 Anti-link triggered. Link removed.`,
@@ -1221,11 +1240,7 @@ const handleAntigroupmention = async (sock, msg, groupMetadata) => {
     }
     
     // Additional debug logging for detection
-    if (groupSettings.antigroupmention) {
-      // Debug log removed
-    }
-    
-    // Additional debug logging to help identify message structure
+    message structure
     if (groupSettings.antigroupmention) {
       // Debug log removed
       // Debug log removed
@@ -1345,5 +1360,6 @@ module.exports = {
   isBotAdmin,
   isMod,
   getGroupMetadata,
-  findParticipant
+  findParticipant,
+  commands // <-- Export commands for use in index.js delete event
 };
