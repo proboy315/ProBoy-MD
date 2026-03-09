@@ -1,5 +1,6 @@
 /**
  * Simple JSON-based Database for Group Settings
+ * Extended to support per-chat and global settings for antidelete.
  */
 
 const fs = require('fs');
@@ -11,6 +12,7 @@ const GROUPS_DB = path.join(DB_PATH, 'groups.json');
 const USERS_DB = path.join(DB_PATH, 'users.json');
 const WARNINGS_DB = path.join(DB_PATH, 'warnings.json');
 const MODS_DB = path.join(DB_PATH, 'mods.json');
+const GLOBAL_DB = path.join(DB_PATH, 'global.json'); // New for global settings
 
 // Initialize database directory
 if (!fs.existsSync(DB_PATH)) {
@@ -28,6 +30,7 @@ initDB(GROUPS_DB, {});
 initDB(USERS_DB, {});
 initDB(WARNINGS_DB, {});
 initDB(MODS_DB, { moderators: [] });
+initDB(GLOBAL_DB, {}); // New global settings file
 
 // Read database
 const readDB = (filePath) => {
@@ -51,23 +54,44 @@ const writeDB = (filePath, data) => {
   }
 };
 
-// Group Settings
-const getGroupSettings = (groupId) => {
-  const groups = readDB(GROUPS_DB);
-  if (!groups[groupId]) {
-    groups[groupId] = { ...config.defaultGroupSettings };
-    writeDB(GROUPS_DB, groups);
+// ==================== CHAT SETTINGS (Groups + Private) ====================
+// Uses the same groups.json file, but works for any JID.
+const getChatSettings = (jid) => {
+  const chats = readDB(GROUPS_DB);
+  if (!chats[jid]) {
+    chats[jid] = { ...config.defaultGroupSettings }; // Use default group settings as base
+    writeDB(GROUPS_DB, chats);
   }
-  return groups[groupId];
+  return chats[jid];
+};
+
+const updateChatSettings = (jid, settings) => {
+  const chats = readDB(GROUPS_DB);
+  chats[jid] = { ...chats[jid], ...settings };
+  return writeDB(GROUPS_DB, chats);
+};
+
+// ==================== GLOBAL SETTINGS ====================
+const getGlobalSetting = (key) => {
+  const globals = readDB(GLOBAL_DB);
+  return globals[key];
+};
+
+const setGlobalSetting = (key, value) => {
+  const globals = readDB(GLOBAL_DB);
+  globals[key] = value;
+  return writeDB(GLOBAL_DB, globals);
+};
+
+// ==================== EXISTING FUNCTIONS (unchanged) ====================
+const getGroupSettings = (groupId) => {
+  return getChatSettings(groupId); // Reuse the new function
 };
 
 const updateGroupSettings = (groupId, settings) => {
-  const groups = readDB(GROUPS_DB);
-  groups[groupId] = { ...groups[groupId], ...settings };
-  return writeDB(GROUPS_DB, groups);
+  return updateChatSettings(groupId, settings);
 };
 
-// User Data
 const getUser = (userId) => {
   const users = readDB(USERS_DB);
   if (!users[userId]) {
@@ -174,5 +198,10 @@ module.exports = {
   getModerators,
   addModerator,
   removeModerator,
-  isModerator
+  isModerator,
+  // New exports
+  getChatSettings,
+  updateChatSettings,
+  getGlobalSetting,
+  setGlobalSetting
 };
