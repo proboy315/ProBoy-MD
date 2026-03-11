@@ -1,159 +1,205 @@
 /**
  * Antidelete Plugin for ProBoy‑MD
- * Caches messages in groups/private chats where antidelete is enabled.
- * When a message is deleted for everyone, it reposts the content immediately.
- * Supports: text, image, video, audio, document, sticker (with captions if any).
- * Works in groups, private chats, and status updates (global toggle).
+ * Global toggle: once enabled, monitors all chats.
+ * Stores messages persistently in JSON file.
+ * Configurable destination: same chat, bot's DM, or custom JID.
  */
 
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
+const fs = require('fs');
+const path = require('path');
 const config = require('../../config');
-const database = require('../../database'); // Updated database with chat/global settings
+const database = require('../../database');
 
-// In-memory cache: messageId -> { msg, timestamp, sender, chatJid, isStatus }
-const messageCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+// Path for persistent message cache
+const CACHE_FILE = path.join(__dirname, '../../database/antidelete_cache.json');
 
-// Clean old entries every minute
+// In‑memory cache: messageId -> { msg, timestamp, sender, chatJid }
+let messageCache = new Map();
+
+// Load existing cache from file
+function loadCache() {
+  try {
+    if (fs.existsSync(CACHE_FILE)) {
+      const raw = fs.readFileSync(CACHE_FILE, 'utf8');
+      const obj = JSON.parse(raw);
+      // Convert plain object back to Map
+      messageCache = new Map(Object.entries(obj));
+      // Optional: clean expired entries on load
+      const now = Date.now();
+      for (const [id, data] of messageCache.entries()) {
+        if (now - data.timestamp > 5 * 60 * 1000) {
+          messageCache.delete(id);
+        }
+      }
+    }
+  } catch (e) {
+    console.error('Failed to load antidelete cache:', e);
+  }
+}
+
+// Save cache to file
+function saveCache() {
+  try {
+    const obj = Object.fromEntries(messageCache);
+    fs.writeFileSync(CACHE_FILE, JSON.stringify(obj, null, 2));
+  } catch (e) {
+    console.error('Failed to save antidelete cache:', e);
+  }
+}
+
+// Clean old entries every minute and save
 setInterval(() => {
   const now = Date.now();
+  let changed = false;
   for (const [id, data] of messageCache.entries()) {
-    if (now - data.timestamp > CACHE_TTL) {
+    if (now - data.timestamp > 5 * 60 * 1000) { // 5 minutes TTL
       messageCache.delete(id);
+      changed = true;
     }
   }
+  if (changed) saveCache();
 }, 60 * 1000);
+
+// Load on startup
+loadCache();
 
 module.exports = {
   name: 'antidelete',
-  aliases: ['antidel', 'savedel'],
+  aliases: ['antidel'],
   category: 'general',
-  description: 'Enable/disable anti‑delete in this chat (groups, DMs, and global for status)',
-  usage: '.antidelete',
-  // No groupOnly/privateOnly – works in both
+  description: 'Global antidelete system with destination options',
+  usage: '.antidelete <on/off/status/setdest> [jid or "chat"]',
 
   async execute(sock, msg, args, extra) {
-    const { from, reply, react, isGroup } = extra;
+    const { from, reply, react, sender, isOwner } = extra;
+
+    // Only owner can change settings
+    if (!isOwner) {
+      return reply('❌ Only bot owner can configure antidelete.');
+    }
+
+    const subCmd = args[0] ? args[0].toLowerCase() : '';
 
     try {
       await react('⏳');
 
-      // Determine the chat type
-      const chatType = isGroup ? 'group' : (from === 'status@broadcast' ? 'status' : 'private');
-
-      // For status, use a global setting (since you can't toggle per status)
-      if (chatType === 'status') {
-        const current = database.getGlobalSetting('antideleteStatus') || false;
-        const newValue = !current;
-        database.setGlobalSetting('antideleteStatus', newValue);
-        const status = newValue ? 'enabled' : 'disabled';
-        return reply(`✅ Anti‑delete for *status updates* has been *${status}* globally.`);
+      if (subCmd === 'on' || subCmd === 'enable') {
+        database.setGlobalSetting('antidelete', true);
+        await reply('✅ Antidelete is now **globally enabled**. It will monitor all chats.');
+      }
+      else if (subCmd === 'off' || subCmd === 'disable') {
+        database.setGlobalSetting('antidelete', false);
+        await reply('❌ Antidelete is now disabled.');
+      }
+      else if (subCmd === 'setdest') {
+        const dest = args[1] ? args[1].trim() : '';
+        if (!dest) {
+          return reply('❌ Please provide a destination JID or "chat".\nExample: .antidelete setdest 1234567890@s.whatsapp.net\nOr: .antidelete setdest chat');
+        }
+        if (dest === 'chat') {
+          database.setGlobalSetting('antideleteDest', null);
+          await reply('✅ Deleted messages will be sent back to the **original chat**.');
+        } else {
+          // Validate JID format (basic)
+          if (!dest.includes('@') || (!dest.endsWith('@s.whatsapp.net') && !dest.endsWith('@g.us'))) {
+            return reply('❌ Invalid JID. Use format like 1234567890@s.whatsapp.net');
+          }
+          database.setGlobalSetting('antideleteDest', dest);
+          await reply(`✅ Deleted messages will be sent to: ${dest}`);
+        }
+      }
+      else if (subCmd === 'status') {
+        const enabled = database.getGlobalSetting('antidelete') || false;
+        const dest = database.getGlobalSetting('antideleteDest');
+        const destDisplay = dest ? dest : 'original chat';
+        await reply(`📊 *Antidelete Status*\n\nEnabled: ${enabled ? '✅' : '❌'}\nDestination: ${destDisplay}`);
+      }
+      else {
+        // Show help
+        await reply(
+          `*Antidelete Commands (Owner only)*\n\n` +
+          `.antidelete on – Enable globally\n` +
+          `.antidelete off – Disable\n` +
+          `.antidelete setdest <jid> – Send recovered messages to specific JID\n` +
+          `.antidelete setdest chat – Send back to original chat\n` +
+          `.antidelete status – Show current settings`
+        );
       }
 
-      // For groups and private chats, use per-chat settings
-      const settings = database.getChatSettings(from);
-      const current = settings.antidelete || false;
-      const newValue = !current;
-      database.updateChatSettings(from, { antidelete: newValue });
-
-      const status = newValue ? 'enabled' : 'disabled';
-      await reply(`✅ Anti‑delete has been *${status}* for this ${chatType}.`);
       await react('✅');
     } catch (error) {
-      console.error('Antidelete toggle error:', error);
-      await reply(`❌ Failed to update setting: ${error.message}`);
+      console.error('Antidelete command error:', error);
+      await reply(`❌ ${error.message}`);
       await react('❌');
     }
   },
 
-  /**
-   * Called by main handler for every incoming message.
-   * Caches the message if antidelete is enabled for the chat (or globally for status).
-   */
   async handleMessage(sock, msg, extra) {
-    const { from, sender, isGroup } = extra;
+    // Only if antidelete is globally enabled
+    const enabled = database.getGlobalSetting('antidelete');
+    if (!enabled) return;
+
+    const { from, sender } = extra;
     const msgId = msg.key.id;
     if (!msgId) return;
 
-    // Determine chat type
-    const isStatus = (from === 'status@broadcast');
-    const chatJid = from;
+    // Ignore system broadcasts
+    if (from === 'status@broadcast') return; // Status updates are handled separately if needed, but we'll ignore for now
 
-    // Check if antidelete is enabled for this chat
-    let enabled = false;
-    if (isStatus) {
-      enabled = database.getGlobalSetting('antideleteStatus') || false;
-    } else {
-      const settings = database.getChatSettings(chatJid);
-      enabled = settings.antidelete || false;
-    }
-
-    if (!enabled) return;
-
-    // Store in cache
+    // Store in cache (with timestamp)
     messageCache.set(msgId, {
-      msg: msg,               // full Baileys message object
+      msg: msg,
       timestamp: Date.now(),
-      sender: sender,         // JID of the person who sent the message
-      chatJid: chatJid,
-      isStatus: isStatus
+      sender: sender,
+      chatJid: from
     });
+
+    // Save to disk after each store (optional, but we can batch with interval)
+    // For simplicity, we save on every store (could be heavy, but okay for low traffic)
+    saveCache();
   },
 
-  /**
-   * Called by main handler when a message is deleted for everyone.
-   * @param {Object} sock - Baileys socket
-   * @param {Object} deleteInfo - Contains { key: { id, remoteJid, fromMe? }, ... }
-   */
   async handleDelete(sock, deleteInfo) {
+    const enabled = database.getGlobalSetting('antidelete');
+    if (!enabled) return;
+
+    const { key } = deleteInfo;
+    if (!key || !key.id || !key.remoteJid) return;
+
+    const msgId = key.id;
+    const cached = messageCache.get(msgId);
+    if (!cached) return; // not in cache
+
+    // Remove from cache
+    messageCache.delete(msgId);
+    saveCache();
+
+    const originalMsg = cached.msg;
+    const sender = cached.sender;
+    const chatJid = cached.chatJid;
+
+    // Determine destination
+    let targetJid = database.getGlobalSetting('antideleteDest');
+    if (!targetJid) {
+      targetJid = chatJid; // send back to original chat
+    }
+
+    // Build caption
+    let caption = `🚨 *Message deleted for everyone!*\n`;
+    caption += `👤 *Original sender:* @${sender.split('@')[0]}\n`;
+    caption += `📍 *From chat:* ${chatJid}\n`;
+
+    const messageType = Object.keys(originalMsg.message || {})[0];
+    const msgContent = originalMsg.message[messageType];
+    if (!msgContent) return;
+
+    // Helper to send with mention if target is a group or DM
+    const sendOptions = (targetJid.endsWith('@g.us') || targetJid.endsWith('@s.whatsapp.net'))
+      ? { mentions: [sender] }
+      : {};
+
     try {
-      const { key } = deleteInfo;
-      if (!key || !key.id || !key.remoteJid) return;
-
-      const msgId = key.id;
-      const chatJid = key.remoteJid;
-
-      // Retrieve from cache
-      const cached = messageCache.get(msgId);
-      if (!cached) return; // message too old or not captured
-
-      // Remove from cache to avoid re‑processing
-      messageCache.delete(msgId);
-
-      const originalMsg = cached.msg;
-      const sender = cached.sender;
-      const isStatus = cached.isStatus;
-
-      // Determine where to send the recovered content
-      let targetJid = chatJid; // default: same chat
-
-      // For status deletions, send to the original sender as a DM
-      if (isStatus) {
-        targetJid = sender; // DM the person who posted the status
-        // If the bot cannot DM that user (e.g., they haven't interacted), this will fail.
-        // We'll catch and log.
-      }
-
-      // Build a notice
-      let caption = `🚨 *Message deleted for everyone!*\n`;
-      if (!isStatus) {
-        caption += `👤 *Sender:* @${sender.split('@')[0]}\n`;
-      } else {
-        caption += `📌 *Status update deleted by* @${sender.split('@')[0]}\n`;
-      }
-
-      // Extract the actual message content
-      const messageType = Object.keys(originalMsg.message || {})[0];
-      const msgContent = originalMsg.message[messageType];
-
-      if (!msgContent) return;
-
-      // Helper to send with mention if target is a group or DM (not status broadcast)
-      const sendOptions = (targetJid.endsWith('@g.us') || targetJid.endsWith('@s.whatsapp.net')) 
-        ? { mentions: [sender] } 
-        : {};
-
-      // Handle different message types
       if (messageType === 'conversation' || messageType === 'extendedTextMessage') {
         const text = msgContent.text || msgContent;
         caption += `💬 *Message:* ${text}`;
@@ -205,12 +251,11 @@ module.exports = {
         });
       }
       else {
-        // Unsupported type – just notify
         caption += `⚠️ *Unsupported message type:* ${messageType}`;
         await sock.sendMessage(targetJid, { text: caption }, sendOptions);
       }
-    } catch (error) {
-      console.error('Antidelete handler error:', error);
+    } catch (err) {
+      console.error('Antidelete recovery error:', err);
     }
   }
 };
