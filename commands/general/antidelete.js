@@ -11,26 +11,18 @@ const path = require('path');
 const config = require('../../config');
 const database = require('../../database');
 
-// Path for persistent message cache
 const CACHE_FILE = path.join(__dirname, '../../database/antidelete_cache.json');
-
-// In‑memory cache: messageId -> { msg, timestamp, sender, chatJid }
 let messageCache = new Map();
 
-// Load existing cache from file
 function loadCache() {
   try {
     if (fs.existsSync(CACHE_FILE)) {
       const raw = fs.readFileSync(CACHE_FILE, 'utf8');
       const obj = JSON.parse(raw);
-      // Convert plain object back to Map
       messageCache = new Map(Object.entries(obj));
-      // Optional: clean expired entries on load
       const now = Date.now();
       for (const [id, data] of messageCache.entries()) {
-        if (now - data.timestamp > 5 * 60 * 1000) {
-          messageCache.delete(id);
-        }
+        if (now - data.timestamp > 5 * 60 * 1000) messageCache.delete(id);
       }
     }
   } catch (e) {
@@ -38,7 +30,6 @@ function loadCache() {
   }
 }
 
-// Save cache to file
 function saveCache() {
   try {
     const obj = Object.fromEntries(messageCache);
@@ -48,12 +39,11 @@ function saveCache() {
   }
 }
 
-// Clean old entries every minute and save
 setInterval(() => {
   const now = Date.now();
   let changed = false;
   for (const [id, data] of messageCache.entries()) {
-    if (now - data.timestamp > 5 * 60 * 1000) { // 5 minutes TTL
+    if (now - data.timestamp > 5 * 60 * 1000) {
       messageCache.delete(id);
       changed = true;
     }
@@ -61,20 +51,18 @@ setInterval(() => {
   if (changed) saveCache();
 }, 60 * 1000);
 
-// Load on startup
 loadCache();
 
 module.exports = {
   name: 'antidelete',
   aliases: ['antidel'],
-  category: 'general',
+  category: 'general', // changed to general
   description: 'Global antidelete system with destination options',
   usage: '.antidelete <on/off/status/setdest> [jid or "chat"]',
 
   async execute(sock, msg, args, extra) {
     const { from, reply, react, sender, isOwner } = extra;
 
-    // Only owner can change settings
     if (!isOwner) {
       return reply('❌ Only bot owner can configure antidelete.');
     }
@@ -101,7 +89,6 @@ module.exports = {
           database.setGlobalSetting('antideleteDest', null);
           await reply('✅ Deleted messages will be sent back to the **original chat**.');
         } else {
-          // Validate JID format (basic)
           if (!dest.includes('@') || (!dest.endsWith('@s.whatsapp.net') && !dest.endsWith('@g.us'))) {
             return reply('❌ Invalid JID. Use format like 1234567890@s.whatsapp.net');
           }
@@ -116,7 +103,6 @@ module.exports = {
         await reply(`📊 *Antidelete Status*\n\nEnabled: ${enabled ? '✅' : '❌'}\nDestination: ${destDisplay}`);
       }
       else {
-        // Show help
         await reply(
           `*Antidelete Commands (Owner only)*\n\n` +
           `.antidelete on – Enable globally\n` +
@@ -136,18 +122,16 @@ module.exports = {
   },
 
   async handleMessage(sock, msg, extra) {
-    // Only if antidelete is globally enabled
     const enabled = database.getGlobalSetting('antidelete');
     if (!enabled) return;
 
     const { from, sender } = extra;
-    const msgId = msg.key.id;
+    const msgId = msg.key?.id;
     if (!msgId) return;
 
-    // Ignore system broadcasts
-    if (from === 'status@broadcast') return; // Status updates are handled separately if needed, but we'll ignore for now
+    // Ignore status broadcasts
+    if (from === 'status@broadcast') return;
 
-    // Store in cache (with timestamp)
     messageCache.set(msgId, {
       msg: msg,
       timestamp: Date.now(),
@@ -155,21 +139,35 @@ module.exports = {
       chatJid: from
     });
 
-    // Save to disk after each store (optional, but we can batch with interval)
-    // For simplicity, we save on every store (could be heavy, but okay for low traffic)
     saveCache();
+    console.log(`[Antidelete] Cached message ${msgId} from ${from}`); // Debug
   },
 
   async handleDelete(sock, deleteInfo) {
     const enabled = database.getGlobalSetting('antidelete');
-    if (!enabled) return;
+    if (!enabled) {
+      console.log('[Antidelete] Not enabled, skipping delete event');
+      return;
+    }
+
+    console.log('[Antidelete] Delete event received:', JSON.stringify(deleteInfo, null, 2)); // Debug
 
     const { key } = deleteInfo;
-    if (!key || !key.id || !key.remoteJid) return;
+    if (!key || !key.id || !key.remoteJid) {
+      console.log('[Antidelete] Invalid delete key');
+      return;
+    }
 
     const msgId = key.id;
+    console.log(`[Antidelete] Looking for cached message with ID: ${msgId}`);
+
     const cached = messageCache.get(msgId);
-    if (!cached) return; // not in cache
+    if (!cached) {
+      console.log(`[Antidelete] Message ${msgId} not found in cache`);
+      return;
+    }
+
+    console.log(`[Antidelete] Found cached message from ${cached.sender} in chat ${cached.chatJid}`);
 
     // Remove from cache
     messageCache.delete(msgId);
@@ -183,6 +181,9 @@ module.exports = {
     let targetJid = database.getGlobalSetting('antideleteDest');
     if (!targetJid) {
       targetJid = chatJid; // send back to original chat
+      console.log(`[Antidelete] Sending back to original chat: ${targetJid}`);
+    } else {
+      console.log(`[Antidelete] Sending to custom destination: ${targetJid}`);
     }
 
     // Build caption
@@ -192,9 +193,11 @@ module.exports = {
 
     const messageType = Object.keys(originalMsg.message || {})[0];
     const msgContent = originalMsg.message[messageType];
-    if (!msgContent) return;
+    if (!msgContent) {
+      console.log('[Antidelete] No message content');
+      return;
+    }
 
-    // Helper to send with mention if target is a group or DM
     const sendOptions = (targetJid.endsWith('@g.us') || targetJid.endsWith('@s.whatsapp.net'))
       ? { mentions: [sender] }
       : {};
@@ -204,6 +207,7 @@ module.exports = {
         const text = msgContent.text || msgContent;
         caption += `💬 *Message:* ${text}`;
         await sock.sendMessage(targetJid, { text: caption }, sendOptions);
+        console.log('[Antidelete] Sent text recovery');
       }
       else if (messageType === 'imageMessage') {
         if (msgContent.caption) caption += `📝 *Caption:* ${msgContent.caption}\n`;
@@ -213,6 +217,7 @@ module.exports = {
           caption: caption.trim(),
           ...sendOptions
         });
+        console.log('[Antidelete] Sent image recovery');
       }
       else if (messageType === 'videoMessage') {
         if (msgContent.caption) caption += `📝 *Caption:* ${msgContent.caption}\n`;
@@ -222,6 +227,7 @@ module.exports = {
           caption: caption.trim(),
           ...sendOptions
         });
+        console.log('[Antidelete] Sent video recovery');
       }
       else if (messageType === 'audioMessage') {
         const buffer = await downloadMediaMessage(originalMsg, 'buffer', {});
@@ -231,6 +237,7 @@ module.exports = {
           caption: caption.trim(),
           ...sendOptions
         });
+        console.log('[Antidelete] Sent audio recovery');
       }
       else if (messageType === 'documentMessage') {
         const buffer = await downloadMediaMessage(originalMsg, 'buffer', {});
@@ -241,6 +248,7 @@ module.exports = {
           caption: caption.trim(),
           ...sendOptions
         });
+        console.log('[Antidelete] Sent document recovery');
       }
       else if (messageType === 'stickerMessage') {
         const buffer = await downloadMediaMessage(originalMsg, 'buffer', {});
@@ -249,13 +257,15 @@ module.exports = {
           caption: caption.trim(),
           ...sendOptions
         });
+        console.log('[Antidelete] Sent sticker recovery');
       }
       else {
         caption += `⚠️ *Unsupported message type:* ${messageType}`;
         await sock.sendMessage(targetJid, { text: caption }, sendOptions);
+        console.log('[Antidelete] Sent unsupported type notice');
       }
     } catch (err) {
-      console.error('Antidelete recovery error:', err);
+      console.error('[Antidelete] Recovery error:', err);
     }
   }
 };
