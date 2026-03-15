@@ -52,6 +52,15 @@ module.exports = {
       chatbot: false,
       autosticker: false // Auto-convert images/videos to stickers
     },
+
+    // AntiDelete Defaults (global)
+    // Note: Commands can update these values in config.js (best-effort) and always update database/global.json.
+    antideleteSettings: {
+      enabled: true,
+      dest: 'chat', // 'chat' | 'owner' | '<jid>'
+      statusDest: 'owner', // 'owner' | '<jid>'
+      bannerImageUrl: 'https://proboy.vercel.app' // optional thumbnail URL for recovery banner
+    },
     
     // API Keys (add your own)
     apiKeys: {
