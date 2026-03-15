@@ -33,6 +33,7 @@ module.exports = {
     defaultGroupSettings: {
       antilink: false,
       antilinkAction: 'delete', // 'delete', 'kick', 'warn'
+      antilinkWhitelist: [], // domains allowed (strings)
       antitag: false,
       antitagAction: 'delete',
       antiall: false, // Owner only - blocks all messages from non-admins
@@ -46,7 +47,15 @@ module.exports = {
       goodbye: false,
       goodbyeMessage: 'Goodbye @user 👋 We will never miss you!',
       antiSpam: false,
+      antiSpamAction: 'warn', // 'warn' | 'delete'
+      antiSpamLimit: 6, // msgs
+      antiSpamWindowSec: 8, // seconds
       antidelete: true,
+      antifake: false,
+      antifakeAllowedCodes: [], // e.g. ['92','1']
+      antibadword: false,
+      antibadwordAction: 'warn', // 'warn' | 'delete'
+      badwords: [], // custom badword list (lowercase)
       nsfw: false,
       detect: false,
       chatbot: false,
@@ -67,7 +76,8 @@ module.exports = {
       // Add API keys here if needed
       openai: '',
       deepai: '',
-      remove_bg: ''
+      remove_bg: '',
+      audd: '' // optional: for .find (music recognition)
     },
     
     // Message Configuration

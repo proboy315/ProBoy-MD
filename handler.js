@@ -404,6 +404,9 @@ const handleMessage = async (sock, msg) => {
     if (!content || actualMessageTypes.length === 0) return;
     
     // ==================== ANTIDELETE HOOK: Call handleMessage for all commands ====================
+    const senderIsAdmin = isGroup ? await isAdmin(sock, sender, from, groupMetadata) : false;
+    const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata) : false;
+
     for (const command of new Set(commands.values())) {
       if (typeof command.handleMessage === 'function') {
         try {
@@ -412,6 +415,10 @@ const handleMessage = async (sock, msg) => {
             sender,
             isGroup,
             groupMetadata,
+            isOwner: isOwner(sender),
+            isAdmin: senderIsAdmin,
+            isBotAdmin: botIsAdmin,
+            isMod: isMod(sender),
             config,
             database,
             utils: {
@@ -486,6 +493,50 @@ const handleMessage = async (sock, msg) => {
         return;
       }
     }
+
+    // ==================== BUTTON DISPATCH: plugin handleButtonResponse ====================
+    const interactive = content?.interactiveResponseMessage || msg.message?.interactiveResponseMessage;
+    const buttonsResponse = content?.buttonsResponseMessage || msg.message?.buttonsResponseMessage;
+    const selectedId =
+      buttonsResponse?.selectedButtonId ||
+      interactive?.nativeFlowResponseMessage?.paramsJson ||
+      interactive?.buttonReplyMessage?.selectedId ||
+      interactive?.id ||
+      null;
+
+    const buttonPayload = buttonsResponse || interactive;
+
+    if (buttonPayload) {
+      for (const command of new Set(commands.values())) {
+        if (typeof command.handleButtonResponse === 'function') {
+          try {
+            await command.handleButtonResponse(sock, msg, {
+              from,
+              sender,
+              isGroup,
+              groupMetadata,
+              isOwner: isOwner(sender),
+              isAdmin: await isAdmin(sock, sender, from, groupMetadata),
+              isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
+              isMod: isMod(sender),
+              config,
+              database,
+              utils: {
+                getMessageContent,
+                normalizeJidWithLid,
+                normalizeJid,
+                buildComparableIds
+              },
+              reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
+              react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+            });
+          } catch (e) {
+            console.error(`Error in handleButtonResponse of ${command.name}:`, e);
+          }
+        }
+      }
+    }
+    // ==============================================================================
     
     let body = '';
     if (content.conversation) {
@@ -680,13 +731,14 @@ const handleMessage = async (sock, msg) => {
     console.log(`Executing command: ${commandName} from ${sender}`);
     
     await command.execute(sock, msg, args, {
+      commandName,
       from,
       sender,
       isGroup,
       groupMetadata,
       isOwner: isOwner(sender),
-      isAdmin: await isAdmin(sock, sender, from, groupMetadata),
-      isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
+      isAdmin: senderIsAdmin,
+      isBotAdmin: botIsAdmin,
       isMod: isMod(sender),
       config,
       database,
@@ -730,10 +782,26 @@ const handleGroupUpdate = async (sock, update) => {
     }
     
     const groupSettings = database.getGroupSettings(id);
-    
-    if (!groupSettings.welcome && !groupSettings.goodbye) return;
-    
+
     const groupMetadata = await getGroupMetadata(sock, id);
+
+    // Plugin hook: allow independent plugins to act on participant updates (antifake/antibot/etc.)
+    try {
+      for (const command of new Set(commands.values())) {
+        if (typeof command.handleGroupUpdate === 'function') {
+          await command.handleGroupUpdate(sock, update, {
+            from: id,
+            isGroup: true,
+            groupMetadata: groupMetadata || null,
+            config,
+            database,
+            reply: (text) => sock.sendMessage(id, { text })
+          });
+        }
+      }
+    } catch {}
+
+    if (!groupSettings.welcome && !groupSettings.goodbye) return;
     if (!groupMetadata) return;
     
     const getParticipantJid = (participant) => {
@@ -988,6 +1056,21 @@ const handleAntilink = async (sock, msg, groupMetadata) => {
     const linkPattern = /(https?:\/\/)?([a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(\/[^\s]*)?/i;
     
     if (linkPattern.test(body)) {
+      // Whitelist support (domains)
+      try {
+        const match = body.match(linkPattern);
+        const urlLike = match ? match[0] : null;
+        if (urlLike && Array.isArray(groupSettings.antilinkWhitelist) && groupSettings.antilinkWhitelist.length) {
+          const normalized = urlLike.startsWith('http') ? urlLike : `https://${urlLike}`;
+          const hostname = new URL(normalized).hostname.toLowerCase();
+          const allow = groupSettings.antilinkWhitelist
+            .map(d => String(d || '').trim().toLowerCase())
+            .filter(Boolean)
+            .some(d => hostname === d || hostname.endsWith(`.${d}`));
+          if (allow) return;
+        }
+      } catch {}
+
       const senderIsAdmin = await isAdmin(sock, sender, from, groupMetadata);
       const senderIsOwner = isOwner(sender);
       
@@ -996,7 +1079,23 @@ const handleAntilink = async (sock, msg, groupMetadata) => {
       const botIsAdmin = await isBotAdmin(sock, from, groupMetadata);
       const action = (groupSettings.antilinkAction || 'delete').toLowerCase();
       
-      if (action === 'kick' && botIsAdmin) {
+      if (action === 'warn') {
+        try {
+          await sock.sendMessage(from, { delete: msg.key });
+        } catch {}
+
+        try {
+          const warnData = database.addWarning(from, sender, 'Anti-link');
+          const maxWarnings = config.maxWarnings || 3;
+          if (warnData.count >= maxWarnings && botIsAdmin) {
+            await sock.groupParticipantsUpdate(from, [sender], 'remove');
+          }
+          await sock.sendMessage(from, {
+            text: `🔗 Anti-link: warning ${warnData.count}/${maxWarnings}.`,
+            mentions: [sender]
+          }, { quoted: msg });
+        } catch {}
+      } else if (action === 'kick' && botIsAdmin) {
         try {
           await sock.sendMessage(from, { delete: msg.key });
           await sock.groupParticipantsUpdate(from, [sender], 'remove');
