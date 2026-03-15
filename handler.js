@@ -404,7 +404,7 @@ const handleMessage = async (sock, msg) => {
     if (!content || actualMessageTypes.length === 0) return;
     
     // ==================== ANTIDELETE HOOK: Call handleMessage for all commands ====================
-    for (const command of commands.values()) {
+    for (const command of new Set(commands.values())) {
       if (typeof command.handleMessage === 'function') {
         try {
           await command.handleMessage(sock, msg, {
@@ -412,6 +412,14 @@ const handleMessage = async (sock, msg) => {
             sender,
             isGroup,
             groupMetadata,
+            config,
+            database,
+            utils: {
+              getMessageContent,
+              normalizeJidWithLid,
+              normalizeJid,
+              buildComparableIds
+            },
             reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
             react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
           });
@@ -680,6 +688,14 @@ const handleMessage = async (sock, msg) => {
       isAdmin: await isAdmin(sock, sender, from, groupMetadata),
       isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
       isMod: isMod(sender),
+      config,
+      database,
+      utils: {
+        getMessageContent,
+        normalizeJidWithLid,
+        normalizeJid,
+        buildComparableIds
+      },
       reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
       react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
     });
