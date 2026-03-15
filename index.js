@@ -244,36 +244,53 @@ function sessionExists() {
   return fs.existsSync(credsPath);
 }
 console.clear()
-// Function to get session from user
-async function getSessionFromUser() {
+// Sleep helper (avoid extra deps)
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Function to get session id OR pairing phone number from user
+async function getAuthFromUser() {
   console.log('\n' + '='.repeat(50));
-  console.log('📱 No session found! Please provide Your session ID');
+  console.log('📱 No session found!');
+  console.log('Enter a Session ID (ProBoy-MD!...) OR your phone number for Pair Code.');
   console.log('='.repeat(50) + '\n');
   console.log('='.repeat(50) + '\n');
   
-  const sessionId = await askQuestion('Enter your session ID: ');
+  const input = await askQuestion('Enter session ID OR phone number: ');
   rl.close();
   
-  if (!sessionId || sessionId.trim() === '') {
-    console.log('❌ No session ID provided. Exiting...');
+  if (!input || input.trim() === '') {
+    console.log('❌ No input provided. Exiting...');
     process.exit(1);
   }
   
-  return sessionId.trim();
+  const trimmed = input.trim();
+  const digits = trimmed.replace(/[^0-9]/g, '');
+
+  // If it looks like a phone number, use pairing code flow
+  if (digits.length >= 8 && digits.length <= 15 && (digits === trimmed || trimmed.startsWith('+'))) {
+    return { mode: 'pair', phone: digits };
+  }
+
+  return { mode: 'session', sessionId: trimmed };
 }
 
 // Main connection function
 async function startBot() {
   const sessionFolder = `./${config.sessionName}`;
   const sessionFile = path.join(sessionFolder, 'creds.json');
+  let pairingPhone = null;
 
   // Check if session exists in folder
   const hasSession = sessionExists();
   
   if (!hasSession && !config.sessionID) {
     // No session in folder and no sessionID in config - ask user
-    const userSessionId = await getSessionFromUser();
-    config.sessionID = userSessionId;
+    const auth = await getAuthFromUser();
+    if (auth.mode === 'session') {
+      config.sessionID = auth.sessionId;
+    } else {
+      pairingPhone = auth.phone;
+    }
   }
 
   // Process session ID if provided (either from config or user input)
@@ -327,6 +344,21 @@ async function startBot() {
   // Bind store to socket
   store.bind(sock.ev);
 
+  // Pair code flow (no QR): request if not registered
+  if (pairingPhone && !state.creds.registered) {
+    try {
+      await sleep(2000);
+      let code = await sock.requestPairingCode(pairingPhone);
+      code = code?.match(/.{1,4}/g)?.join('-') || code;
+      console.log('\n' + '='.repeat(50));
+      console.log('🔐 Pairing Code:', code);
+      console.log('Open WhatsApp → Linked devices → Link a device → Enter code');
+      console.log('='.repeat(50) + '\n');
+    } catch (e) {
+      console.error('❌ Failed to request pairing code:', e?.message || e);
+    }
+  }
+
   // Watchdog for inactive socket (Baileys bug fix)
   let lastActivity = Date.now();
   const INACTIVITY_TIMEOUT = 30 * 60 * 1000; // 30 minutes
@@ -361,8 +393,8 @@ async function startBot() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('\n\n📱 Scan this QR code with WhatsApp:\n');
-      qrcode.generate(qr, { small: true });
+      // QR is intentionally disabled in this bot build (Pair Code / Session only)
+      console.log('⚠️ QR received but QR login is disabled. Use Pair Code (phone number) or Session ID.');
     }
 
     if (connection === 'close') {
@@ -391,6 +423,21 @@ async function startBot() {
       console.log(`👑 Owner: ${ownerNames}`);
       console.log('='.repeat(50) + '\n');
       console.log('Bot is ready to receive messages!\n');
+
+      // Notify owner(s) in WhatsApp on connect
+      try {
+        const owners = Array.isArray(config.ownerNumber) ? config.ownerNumber : [];
+        const botJid = sock.user?.id ? sock.user.id.split(':')[0] : 'unknown';
+        const text = `✅ *${config.botName} Connected*\n\n📱 Bot: ${botJid}\n⚡ Prefix: ${config.prefix}\n🕒 ${new Date().toLocaleString()}`;
+        for (const owner of owners) {
+          const jid = owner.includes('@') ? owner : `${String(owner).replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+          if (jid.endsWith('@s.whatsapp.net')) {
+            await sock.sendMessage(jid, { text });
+          }
+        }
+      } catch {
+        // ignore
+      }
 
       // --- AUTO ADD BOT NUMBER TO OWNER ARRAY (with default preservation) ---
       try {
@@ -463,6 +510,8 @@ async function startBot() {
   // System JID filter - checks if JID is from broadcast/status/newsletter
   const isSystemJid = (jid) => {
     if (!jid) return true;
+    // Allow WhatsApp status JID so features like antidelete can work on statuses
+    if (jid === 'status@broadcast') return false;
     return jid.includes('@broadcast') ||
       jid.includes('status.broadcast') ||
       jid.includes('@newsletter') ||
@@ -470,12 +519,12 @@ async function startBot() {
   };
 
   // Messages handler - Process only new messages
-  sock.ev.on('messages.upsert', ({ messages, type }) => {
+	  sock.ev.on('messages.upsert', ({ messages, type }) => {
     // Only process "notify" type (new messages), skip "append" (old messages from history)
     if (type !== 'notify') return;
 
     // Process messages in the array
-    for (const msg of messages) {
+	    for (const msg of messages) {
       // Skip if message is invalid or missing key
       if (!msg.message || !msg.key?.id) continue;
 
@@ -484,10 +533,24 @@ async function startBot() {
         continue;
       }
 
-      // System message filter - ignore broadcast/status/newsletter messages
-      if (isSystemJid(from)) {
-        continue; // Silently ignore system messages
-      }
+	      // System message filter - ignore broadcast/status/newsletter messages
+	      if (isSystemJid(from)) {
+	        continue; // Silently ignore system messages
+	      }
+
+	      // Antidelete: Some "delete for everyone" events arrive as protocolMessage upserts.
+	      // Route them directly to plugins that implement handleDelete.
+	      const protocol = msg.message?.protocolMessage;
+	      const revokeKey = protocol?.key;
+	      if (revokeKey?.id && (protocol?.type === 0 || protocol?.type === 1 || protocol?.type === undefined)) {
+	        if (!revokeKey.remoteJid) revokeKey.remoteJid = from;
+	        const deleter = msg.key?.participant || msg.key?.remoteJid || null;
+	        for (const command of handler.commands.values()) {
+	          if (typeof command.handleDelete === 'function') {
+	            command.handleDelete(sock, { key: revokeKey, deleter }).catch(() => {});
+	          }
+	        }
+	      }
 
       // Deduplication: Skip if message has already been processed
       const msgId = msg.key.id;
@@ -583,9 +646,38 @@ async function startBot() {
     // Silently handle receipt updates
   });
 
-  // Message updates (silently handled, no logging)
-  sock.ev.on('messages.update', () => {
-    // Silently handle message updates
+  // Message updates (used for antidelete via protocol revoke)
+  sock.ev.on('messages.update', async (updates) => {
+    try {
+      if (!Array.isArray(updates)) return;
+
+      for (const item of updates) {
+        const key = item?.key;
+        const update = item?.update;
+        const protocol = update?.message?.protocolMessage || update?.protocolMessage;
+        const revokeKey = protocol?.key;
+
+        // "Delete for everyone" commonly arrives as protocolMessage (REVOKE)
+        if (!revokeKey?.id) continue;
+
+        // Restrict to likely revoke types (most Baileys builds use 0 for REVOKE)
+        if (typeof protocol?.type === 'number' && protocol.type !== 0 && protocol.type !== 1) continue;
+
+        // Ensure remoteJid exists on the revoked key
+        if (!revokeKey.remoteJid && key?.remoteJid) revokeKey.remoteJid = key.remoteJid;
+
+        // Best-effort: who performed the delete (often present on the update key in groups)
+        const deleter = key?.participant || key?.remoteJid || null;
+
+        for (const command of handler.commands.values()) {
+          if (typeof command.handleDelete === 'function') {
+            await command.handleDelete(sock, { key: revokeKey, deleter });
+          }
+        }
+      }
+    } catch (error) {
+      // Keep silent to avoid log spam
+    }
   });
 
   // Group participant updates (join/leave)
