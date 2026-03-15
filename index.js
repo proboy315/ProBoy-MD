@@ -70,6 +70,7 @@ const {
 const qrcode = require('qrcode-terminal');
 let config = require('./config'); // Initially load config
 const handler = require('./handler');
+const { updateViaZip, getRemoteMeta } = require('./utils/updater');
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');
@@ -280,6 +281,53 @@ async function startBot() {
   const sessionFile = path.join(sessionFolder, 'creds.json');
   let pairingPhone = null;
 
+  // ==================== AUTO UPDATE ON BOOT (fixed) ====================
+  try {
+    const zipUrl = (config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
+    if (zipUrl) {
+      const dbDir = path.join(__dirname, 'database');
+      if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+      const metaPath = path.join(dbDir, 'auto_update.json');
+      const reportPath = path.join(dbDir, 'last_update_report.json');
+
+      const prev = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8') || '{}') : {};
+      const meta = await getRemoteMeta(zipUrl);
+
+      const hasStrongSignal = !!(meta.etag || meta.lastModified);
+      const changed =
+        (hasStrongSignal && (meta.etag !== prev.etag || meta.lastModified !== prev.lastModified)) ||
+        (!hasStrongSignal && meta.length && meta.length !== prev.length);
+
+      const cooldownMs = 6 * 60 * 60 * 1000;
+      const recentlyApplied = prev.lastAppliedAt && Date.now() - prev.lastAppliedAt < cooldownMs;
+
+      if (changed && !recentlyApplied) {
+        console.log('🔄 Auto-update: new update detected. Applying…');
+        const out = await updateViaZip(zipUrl);
+        const report = {
+          at: Date.now(),
+          updated: out.updated.slice(0, 200),
+          added: out.added.slice(0, 200),
+          counts: { updated: out.updated.length, added: out.added.length, skipped: out.skipped.length }
+        };
+        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+        fs.writeFileSync(metaPath, JSON.stringify({ ...meta, lastAppliedAt: Date.now() }, null, 2));
+
+        try {
+          require('child_process').execSync('pm2 restart all', { stdio: 'ignore' });
+          return;
+        } catch {}
+        setTimeout(() => process.exit(0), 500);
+        return;
+      }
+
+      fs.writeFileSync(metaPath, JSON.stringify({ ...prev, ...meta }, null, 2));
+    }
+  } catch (e) {
+    // Don't block startup on updater failures
+  }
+  // =====================================================================
+
   // Check if session exists in folder
   const hasSession = sessionExists();
   
@@ -343,6 +391,17 @@ async function startBot() {
 
   // Bind store to socket
   store.bind(sock.ev);
+
+  // Plugin initializers (optional)
+  try {
+    for (const command of new Set(handler.commands.values())) {
+      if (typeof command.init === 'function') {
+        await command.init(sock);
+      }
+    }
+  } catch {
+    // ignore plugin init errors
+  }
 
   // Pair code flow (no QR): request if not registered
   if (pairingPhone && !state.creds.registered) {
@@ -424,20 +483,44 @@ async function startBot() {
       console.log('='.repeat(50) + '\n');
       console.log('Bot is ready to receive messages!\n');
 
-      // Notify owner(s) in WhatsApp on connect
-      try {
-        const owners = Array.isArray(config.ownerNumber) ? config.ownerNumber : [];
-        const botJid = sock.user?.id ? sock.user.id.split(':')[0] : 'unknown';
-        const text = `✅ *${config.botName} Connected*\n\n📱 Bot: ${botJid}\n⚡ Prefix: ${config.prefix}\n🕒 ${new Date().toLocaleString()}`;
-        for (const owner of owners) {
-          const jid = owner.includes('@') ? owner : `${String(owner).replace(/[^0-9]/g, '')}@s.whatsapp.net`;
-          if (jid.endsWith('@s.whatsapp.net')) {
-            await sock.sendMessage(jid, { text });
-          }
-        }
-      } catch {
-        // ignore
-      }
+	      // Notify owner(s) in WhatsApp on connect
+	      try {
+	        const owners = Array.isArray(config.ownerNumber) ? config.ownerNumber : [];
+	        const botJid = sock.user?.id ? sock.user.id.split(':')[0] : 'unknown';
+	        const text = `✅ *${config.botName} Connected*\n\n📱 Bot: ${botJid}\n⚡ Prefix: ${config.prefix}\n🕒 ${new Date().toLocaleString()}`;
+
+	        let updateText = null;
+	        try {
+	          const reportPath = path.join(__dirname, 'database', 'last_update_report.json');
+	          if (fs.existsSync(reportPath)) {
+	            const report = JSON.parse(fs.readFileSync(reportPath, 'utf8') || '{}');
+	            const counts = report.counts || {};
+	            const updated = Array.isArray(report.updated) ? report.updated : [];
+	            const added = Array.isArray(report.added) ? report.added : [];
+	            const sample = [...updated.slice(0, 10), ...added.slice(0, 10)].slice(0, 15);
+	            const lines = [];
+	            lines.push('🔄 *Auto-Update Applied*');
+	            lines.push(`Updated: ${counts.updated || 0} | Added: ${counts.added || 0}`);
+	            if (sample.length) {
+	              lines.push('');
+	              lines.push('*Sample:*');
+	              for (const f of sample) lines.push(`- ${f}`);
+	            }
+	            updateText = lines.join('\n');
+	            fs.unlinkSync(reportPath);
+	          }
+	        } catch {}
+
+	        for (const owner of owners) {
+	          const jid = owner.includes('@') ? owner : `${String(owner).replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+	          if (jid.endsWith('@s.whatsapp.net')) {
+	            await sock.sendMessage(jid, { text });
+	            if (updateText) await sock.sendMessage(jid, { text: updateText });
+	          }
+	        }
+	      } catch {
+	        // ignore
+	      }
 
       // --- AUTO ADD BOT NUMBER TO OWNER ARRAY (with default preservation) ---
       try {
@@ -545,11 +628,11 @@ async function startBot() {
 	      if (revokeKey?.id && (protocol?.type === 0 || protocol?.type === 1 || protocol?.type === undefined)) {
 	        if (!revokeKey.remoteJid) revokeKey.remoteJid = from;
 	        const deleter = msg.key?.participant || msg.key?.remoteJid || null;
-	        for (const command of handler.commands.values()) {
-	          if (typeof command.handleDelete === 'function') {
-	            command.handleDelete(sock, { key: revokeKey, deleter }).catch(() => {});
-	          }
-	        }
+		        for (const command of new Set(handler.commands.values())) {
+		          if (typeof command.handleDelete === 'function') {
+		            command.handleDelete(sock, { key: revokeKey, deleter }).catch(() => {});
+		          }
+		        }
 	      }
 
       // Deduplication: Skip if message has already been processed
@@ -629,7 +712,7 @@ async function startBot() {
       const items = Array.isArray(deleteData) ? deleteData : (deleteData.keys || []);
       for (const key of items) {
         // Call handleDelete for all commands that have it (like antidelete)
-        for (const command of handler.commands.values()) {
+        for (const command of new Set(handler.commands.values())) {
           if (typeof command.handleDelete === 'function') {
             await command.handleDelete(sock, { key });
           }
@@ -669,7 +752,7 @@ async function startBot() {
         // Best-effort: who performed the delete (often present on the update key in groups)
         const deleter = key?.participant || key?.remoteJid || null;
 
-        for (const command of handler.commands.values()) {
+        for (const command of new Set(handler.commands.values())) {
           if (typeof command.handleDelete === 'function') {
             await command.handleDelete(sock, { key: revokeKey, deleter });
           }
