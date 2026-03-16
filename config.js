@@ -68,7 +68,7 @@ module.exports = {
       enabled: true,
       dest: 'chat', // 'chat' | 'owner' | '<jid>'
       statusDest: 'owner', // 'owner' | '<jid>'
-      bannerImageUrl: 'https://proboy.vercel.app' // optional thumbnail URL for recovery banner
+      bannerImageUrl: 'https://proboy.vercel.app/cooltext504227312978482.png' // optional thumbnail URL for recovery banner
     },
     
     // API Keys (add your own)
