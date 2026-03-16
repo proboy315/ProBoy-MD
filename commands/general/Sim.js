@@ -1,43 +1,33 @@
 /**
  * SIM Database Lookup Plugin – Use at your own risk!
- * Fetches Pakistani SIM owner details (name, address, CNIC) from public database.
- * Based on data.js (auto‑responder) but converted to a manual command.
+ * Fetches Pakistani SIM owner details from public database.
+ * API: https://ammar-sim-database-api-786.vercel.app
  */
 
 const axios = require('axios');
 
 module.exports = {
   name: 'sim',
-  aliases: ['simdatabase', 'simdetails', 'siminfo', 'cnicinfo', 'numberinfo'],
+  aliases: ['simdatabase', 'simdetails', 'siminfo', 'cnicinfo', 'numberinfo', 'simdata'],
   category: 'general',
   description: '⚠️ Lookup Pakistani SIM owner details (use ethically)',
   usage: '.sim <pakistani mobile number or 13-digit CNIC>',
-  
+
   async execute(sock, msg, args, extra) {
     const { reply, react, from } = extra;
 
     try {
-      // Show warning first
+      // Quick warning (no delay)
       await react('⚠️');
-      await reply(
-        '*⚠️ WARNING ⚠️*\n' +
-        'This command accesses personal data from public databases.\n' +
-        'Use it only for ethical purposes (e.g., your own number).\n' +
-        'The bot owner is not responsible for misuse.\n\n' +
-        '_Proceeding in 3 seconds..._'
-      );
-
-      // Small delay to let user read warning
-      await new Promise(resolve => setTimeout(resolve, 3000));
-
-      // Check if number/CNIC is provided
+      
+      // Check if input provided
       if (!args.length) {
         return reply(`❌ Please provide a Pakistani mobile number or CNIC.\n\nExample: ${this.usage}`);
       }
 
       await react('⏳');
 
-      // Extract only digits from arguments
+      // Extract only digits
       const raw = args.join('').replace(/\D/g, '');
       if (!raw) {
         return reply('❌ Invalid input. Only digits allowed.');
@@ -69,42 +59,41 @@ module.exports = {
       const response = await axios.get(apiUrl, { timeout: 15000 });
       const result = response.data;
 
-      // No records found
-      if (!result || !result.data || !Array.isArray(result.data) || result.data.length === 0) {
+      // Check API response
+      if (!result || !result.success || !result.data || !Array.isArray(result.data) || result.data.length === 0) {
         return reply(`
 🚫 *NO RECORD FOUND*
 ━━━━━━━━━━━━━━━━━━━
 Input: \`${query}\`
 
-
+*Use at your own risk.*
         `);
       }
 
-      // Show up to 3 records (spam protection)
-      const records = result.data.slice(0, 3);
+      // Show up to 5 records (to avoid spam)
+      const records = result.data.slice(0, 5);
 
+      // Send each record
       for (let i = 0; i < records.length; i++) {
         const r = records[i];
 
         const replyText = `
 ╔════════════════════
-║ 📂 *DATA RECORD ${i + 1}/${records.length}*
+║ 📂 *RECORD ${i + 1}/${records.length}*
 ║ ──────────────────
-║ 👤 *Name*     : ${r.name || 'N/A'}
-║ 📞 *Number*   : ${r.number || 'N/A'}
+║ 👤 *Name*     : ${r.full_name || 'N/A'}
+║ 📞 *Number*   : ${r.sim_number || 'N/A'}
 ║ 🆔 *CNIC*     : ${r.cnic || 'N/A'}
 ║ 🏠 *Address*  : ${r.address || 'N/A'}
 ╚════════════════════
 
-✅ STATUS: DATA RETRIEVED
-━━━━━━━━━━━━━━━━━━━━━━━━━
-
+⚠️ *Use at your own risk.*
 `;
 
         await sock.sendMessage(from, { text: replyText }, { quoted: msg });
 
-        // Anti‑spam delay between multiple records
-        await new Promise(resolve => setTimeout(resolve, 700));
+        // Small delay between multiple messages
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       await react('✅');
