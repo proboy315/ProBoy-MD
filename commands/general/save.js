@@ -13,9 +13,9 @@ const { tmpdir } = require('os');
 module.exports = {
   name: 'save',
   aliases: ['saver'],
-  category: 'media',
-  description: 'Save any message by replying with .save (works for status forwards too)',
-  usage: 'Reply to a message with .save',
+  category: 'general',
+  description: 'Save any Status  by replying with .save (works for status forwards too)',
+  usage: 'Reply to a Status with .save',
 
   async execute(sock, msg, args, extra) {
     const { reply, react, from } = extra;
@@ -26,7 +26,7 @@ module.exports = {
     const quotedParticipant = msg.message?.extendedTextMessage?.contextInfo?.participant;
 
     if (!quoted || !quotedMsgId) {
-      return reply('❌ Please reply to a message you want to save.');
+      return reply('❌ Please reply to a Status you want to save.');
     }
 
     try {
