@@ -68,7 +68,7 @@ module.exports = {
       enabled: true,
       dest: 'chat', // 'chat' | 'owner' | '<jid>'
       statusDest: 'owner', // 'owner' | '<jid>'
-      bannerImageUrl: 'https://proboy.vercel.app/cooltext504227312978482.png' // optional thumbnail URL for recovery banner
+      bannerImageUrl: 'https://proboy.vercel.app/ForAntiDelete.JPG' // optional thumbnail URL for recovery banner
     },
     
     // API Keys (add your own)
@@ -101,6 +101,7 @@ module.exports = {
     
     // Social Links (optional)
     social: {
+      website: 'https://proboy.vercel.app',
       github: 'https://github.com/proboy315',
       instagram: 'https://instagram.com/itx___proboy',
       Tiktok: 'https://tiktok.com/@itx_ProBoy'
