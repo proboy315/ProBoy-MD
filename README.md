@@ -1,29 +1,22 @@
+# ProBoy-MD 
 <div align="center">
-
-ProBoy-MD
-
-https://img.shields.io/badge/Made%20with-Baileys-00bcd4?style=for-the-badge
-https://img.shields.io/badge/Node.js-18%2B-339933?style=for-the-badge&logo=node.js&logoColor=white
-https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge
 
 <img src="utils/bot_image.jpg" alt="ProBoy-MD" width="260">
 
 </div>
 
 ProBoy-MD is a WhatsApp MD bot built on top of the Baileys library.
-It’s designed to be fast, lightweight, and easy to customize without touching the core code.
-This project is fully open source — you can modify it, rebrand it, and make your own bot from this codebase free of cost, without needing any permission.
-All commands and the overall structure are written to make customization (bot image, prefix, name, features, etc.) as easy as possible.
+It’s designed to be fast, lightweight,
+All commands and the overall structure are written to make easy to install new Plugins By Your Self
 
 ---
 
 ✨ Features
 
-· Fully Open Source – Entire codebase is editable; host it anywhere (panel, VPS, Heroku, etc.).
-· Easy Customization via Commands – Change bot image, prefix, channel/newsletter, bot name, etc. with simple commands.
+· 
 · Modular Command System – Commands are organized in the commands folder for easy editing.
 · Optimized for Stability – RAM‑optimized media handling (streaming, temp cleanup), better session handling via sessionID in config.js.
-· Auto‑Update on Boot – Checks for updates from the configured ZIP URL and applies them automatically.
+· Auto‑Update on Boot – Checks for updates and applies them automatically.
 · Pairing Code & Session ID Support – No QR needed; connect using your phone number or a session string.
 · Owner Utilities – Restart, update from ZIP, and more owner‑only tools.
 · Built‑in Anti‑Delete – Capture deleted messages (configurable).
@@ -40,10 +33,30 @@ All commands and the overall structure are written to make customization (bot im
   </a>
 </div>
 
-This creates your own copy of ProBoy-MD under your GitHub account.
 
-2. Get Your Session or Pairing Code
+2. Get Your Session Id / Creds.json From
+   
+<div align="center">
 
+<a href="https://ProBoy-PAIR.onrender.com/" target="_blank">
+  <img src="https://img.shields.io/badge/Generate-Pair%20Code-blueviolet?style=for-the-badge" alt="Generate Pair Code">
+</a>
+
+</div>
+
+After scanning, you will receive a **session string** starting with:
+
+```text
+ProBoy-MD!H4....
+```
+
+Copy that full string and paste it into `config.js`:
+
+```js
+sessionID: 'ProBoy-MD!H4.....'
+```
+
+Or set it via the `SESSION_ID` environment variable when hosting.
 The bot supports two ways to connect: Session ID or Pairing Code.
 
 · Session ID (recommended for panels):
@@ -100,24 +113,11 @@ The bot will then display a code – open WhatsApp > Linked Devices > Link a Dev
 
 ---
 
-🌐 Community
-
-<div align="center">
-  <a href="https://t.me/+3QhFUZHx-nhhZmY1" target="_blank">
-    <img src="https://img.shields.io/badge/Join-Telegram-0088cc?style=for-the-badge&logo=telegram&logoColor=white" alt="Join Telegram">
-  </a>
-  <a href="https://whatsapp.com/channel/0029Va90zAnIHphOuO8Msp3A" target="_blank">
-    <img src="https://img.shields.io/badge/Join-WhatsApp-25D366?style=for-the-badge&logo=whatsapp&logoColor=white" alt="Join WhatsApp Channel">
-  </a>
-</div>
-
----
-
 🤖 Plugin Development
 
 To create new commands (plugins) for ProBoy-MD, copy the entire prompt below and send it to an AI (like ChatGPT) – it will generate production‑ready plugins aligned with the repository's architecture.
+<detail>
 
-<details>
 <summary>📋 Click to copy the Plugin Development Master Prompt</summary>
 
 ```text
@@ -127,9 +127,9 @@ Use this document as a **single, all‑in‑one training prompt** for an AI (or 
 
 This guide is aligned with the current codebase (`index.js`, `handler.js`, `database.js`, `config.js`, `commands/*`, `utils/*`).
 
----
 
-## 1) Project Architecture (How ProBoy‑MD Works)
+
+ 1) Project Architecture (How ProBoy‑MD Works)
 
 - Entry point: `index.js`
   - Connects to WhatsApp via Baileys
@@ -150,16 +150,13 @@ This guide is aligned with the current codebase (`index.js`, `handler.js`, `data
   - Global settings: `getGlobalSetting(key)` / `setGlobalSetting(key, value)`
 - Commands layout:
 
-```txt
+
 commands/
   general/
   media/
   owner/
   utility/
   ... (other categories may exist)
-```
-
----
 
 2) Command Module Specification (Plugin Export)
 
@@ -184,17 +181,17 @@ Optional fields (supported by this repo)
   · handleDelete(sock, payload) → called when a message is deleted/revoked (optional)
   · handleButtonResponse(sock, msg, extra) → called when a button is clicked (if your handler routes it)
 
----
+
 
 3) execute() Signature (Repo‑Aligned extra)
 
-```js
+
 async execute(sock, msg, args, extra)
-```
+
 
 This repository passes these fields on extra (existing + extended):
 
-```js
+
 extra = {
   from, sender, isGroup, groupMetadata,
   isOwner, isAdmin, isBotAdmin, isMod,
@@ -208,14 +205,13 @@ extra = {
     getMessageContent, normalizeJidWithLid, normalizeJid, buildComparableIds
   }
 }
-```
+
 
 Notes:
 
 · Permission flags are enforced by handler.js; do not re-check them inside your plugin unless you’re doing a special case.
 · Always validate arguments (args) and show usage when missing/invalid.
 
----
 
 4) Configuration (config.js)
 
@@ -230,7 +226,7 @@ Plugins can read:
 
 Current config.js shape (as in this repo):
 
-```js
+
 module.exports = {
   ownerNumber: ['923261684315'],
   ownerName: ['SHAHAN'],
@@ -309,15 +305,13 @@ module.exports = {
     Tiktok: 'https://tiktok.com/@itx_ProBoy'
   }
 };
-```
 
----
 
 5) Plugin Template (Skeleton Only)
 
 Create file: commands/<category>/<name>.js
 
-```js
+
 module.exports = {
   name: 'example',
   aliases: ['ex'],
@@ -347,9 +341,8 @@ module.exports = {
     }
   }
 };
-```
 
----
+
 
 6) Real Examples (Already Working in This Repo)
 
@@ -370,7 +363,7 @@ When building new plugins, follow the same patterns:
 · try/catch with user-friendly errors
 · keep button IDs namespaced (if you implement buttons)
 
----
+
 
 7) Setup & Dev Notes
 
@@ -380,7 +373,7 @@ When building new plugins, follow the same patterns:
   · Bot also supports Pair Code flow (phone number → pairing code printed to terminal)
 · Database files live in: ./database/
 
----
+
 
 8) AI Output Expectations (When Generating Plugins)
 
@@ -393,36 +386,24 @@ When an AI generates a plugin for this repo, it must:
 · Use ab-downloader for supported media sources when needed (refer to repo's existing downloader examples)
 · Be compatible with existing handler/database/config patterns
 
+
+
+
 ```
-</details>
+</detail>
+---
+---
 
 Copy the entire prompt above and send it to an AI to generate new plugins for ProBoy‑MD. The AI will understand the architecture and produce ready‑to‑use command files.
 
----
-
 ## 🙏 Credits
 
-- **Mr Unique Hacker** – Main developer & maintainer
+- **SHAHAN** – Main developer & maintainer
 - **Baileys** – WhatsApp Web API library (`@whiskeysockets/baileys`)
 - Other open‑source libraries listed in `package.json`
 
 ---
 
-## ☕ Support Me
-
-<div align="center">
-  <a href="https://buymeacoffee.com/mruniquehacker" target="_blank">
-    <img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Support%20Developer-FF813F?style=for-the-badge&logo=buy-me-a-coffee&logoColor=white" alt="Buy Me a Coffee">
-  </a>
-</div>
-
-If you find this project helpful and want to support the developer, consider buying me a coffee! Your support helps maintain and improve this open-source project.
-
-<div align="center">
-  <img src="utils/bmc_qr.png" alt="Buy Me a Coffee QR Code" width="200">
-</div>
-
----
 
 ## ⚠️ Important Warning
 
@@ -467,4 +448,4 @@ This project contains code from various open‑source projects and AI tools, inc
 
 - **Baileys** – MIT License
 - Other libraries as listed in `package.json`
-```
+
