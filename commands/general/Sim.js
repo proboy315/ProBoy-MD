@@ -1,33 +1,62 @@
 /**
- * SIM Database Lookup Plugin – Use at your own risk!
+ * SIM Database Lookup Plugin – General Category
  * Fetches Pakistani SIM owner details from public database.
- * API: https://ammar-sim-database-api-786.vercel.app
+ * Includes retry logic and multiple user-agents for reliability.
  */
 
 const axios = require('axios');
 
+// List of user-agents to rotate
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
+  'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
+];
+
+// Retry function with exponential backoff
+async function fetchWithRetry(url, maxRetries = 3, timeout = 20000) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const userAgent = USER_AGENTS[(attempt - 1) % USER_AGENTS.length];
+      const response = await axios.get(url, {
+        timeout,
+        headers: { 'User-Agent': userAgent }
+      });
+      return response; // success
+    } catch (err) {
+      lastError = err;
+      if (attempt === maxRetries) break;
+      // wait before retry (exponential: 1s, 2s, 4s...)
+      const delay = Math.pow(2, attempt - 1) * 1000;
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError;
+}
+
 module.exports = {
   name: 'sim',
-  aliases: ['simdatabase', 'simdetails', 'siminfo', 'cnicinfo', 'numberinfo', 'simdata'],
+  aliases: ['simdatabase', 'simdetails', 'siminfo', 'cnicinfo', 'numberinfo', 'simdata', 'simowner'],
   category: 'general',
-  description: '⚠️ Lookup Pakistani SIM owner details (use ethically)',
+  description: '🔍 Lookup Pakistani SIM owner details (use ethically)',
   usage: '.sim <pakistani mobile number or 13-digit CNIC>',
 
   async execute(sock, msg, args, extra) {
     const { reply, react, from } = extra;
 
     try {
-      // Quick warning (no delay)
       await react('⚠️');
-      
-      // Check if input provided
+
+      // Check input
       if (!args.length) {
         return reply(`❌ Please provide a Pakistani mobile number or CNIC.\n\nExample: ${this.usage}`);
       }
 
       await react('⏳');
 
-      // Extract only digits
+      // Extract digits
       const raw = args.join('').replace(/\D/g, '');
       if (!raw) {
         return reply('❌ Invalid input. Only digits allowed.');
@@ -54,9 +83,21 @@ module.exports = {
           '✅ CNIC format: 13 digits (e.g., 1234512345671)');
       }
 
-      // API request
+      // API request with retry
       const apiUrl = `https://ammar-sim-database-api-786.vercel.app/api/database?number=${encodeURIComponent(query)}`;
-      const response = await axios.get(apiUrl, { timeout: 15000 });
+      
+      let response;
+      try {
+        response = await fetchWithRetry(apiUrl, 3, 20000);
+      } catch (err) {
+        console.error('All retries failed:', err);
+        return reply('❌ The API is currently unreachable. Possible reasons:\n' +
+          '• The service may be down or blocked\n' +
+          '• Your network might have restrictions\n' +
+          '• Try again later or use a VPN\n\n' +
+          '_If the problem persists, the API may no longer be public._');
+      }
+
       const result = response.data;
 
       // Check API response
@@ -70,10 +111,9 @@ Input: \`${query}\`
         `);
       }
 
-      // Show up to 5 records (to avoid spam)
+      // Show up to 5 records (avoid spam)
       const records = result.data.slice(0, 5);
 
-      // Send each record
       for (let i = 0; i < records.length; i++) {
         const r = records[i];
 
@@ -92,20 +132,14 @@ Input: \`${query}\`
 
         await sock.sendMessage(from, { text: replyText }, { quoted: msg });
 
-        // Small delay between multiple messages
+        // Small delay between messages
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
       await react('✅');
     } catch (error) {
-      console.error('SIM command error:', error);
-      if (error.code === 'ECONNABORTED') {
-        await reply('❌ Request timed out. The API may be down.');
-      } else if (error.response) {
-        await reply(`❌ API error: ${error.response.status} – ${error.response.statusText}`);
-      } else {
-        await reply(`❌ Failed to fetch data: ${error.message}`);
-      }
+      console.error('SIM command unexpected error:', error);
+      await reply(`❌ Unexpected error: ${error.message}`);
       await react('❌');
     }
   }
