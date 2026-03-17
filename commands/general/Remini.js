@@ -1,7 +1,8 @@
 /**
- * Remini / Upscale Plugin – Multi‑API Fallback
+ * Remini / Upscale Plugin – Multi‑API Fallback (Fixed)
  * Enhances image quality using multiple services.
- * Automatically tries different methods until one succeeds.
+ * Primary method: Vyro.ai (inferenceengine) – works directly with buffer.
+ * Fallbacks: Prince Technet, David Cyril, Remini API.
  */
 
 const axios = require('axios');
@@ -20,8 +21,7 @@ const USER_AGENTS = [
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
   'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1',
   'Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-  'okhttp/4.9.3',
-  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  'okhttp/4.9.3'
 ];
 
 // ==================== HELPER FUNCTIONS ====================
@@ -108,10 +108,41 @@ async function getImageBuffer(sock, msg, args) {
 
 // ==================== ENHANCEMENT METHODS ====================
 
-// Method 1: Prince Technet API
+// Method 1: Vyro.ai (primary) – works directly with buffer
+async function enhanceViaVyro(buffer) {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('model_version', '1');
+    form.append('image', buffer, {
+      filename: 'enhance_image_body.jpg',
+      contentType: 'image/jpeg'
+    });
+
+    // Use form.submit to mimic the original working code
+    form.submit({
+      protocol: 'https:',
+      host: 'inferenceengine.vyro.ai',
+      path: '/enhance',
+      method: 'POST',
+      headers: {
+        'User-Agent': 'okhttp/4.9.3',
+        'Connection': 'Keep-Alive',
+        'Accept-Encoding': 'gzip'
+      }
+    }, (err, res) => {
+      if (err) return reject(err);
+      const chunks = [];
+      res.on('data', chunk => chunks.push(chunk));
+      res.on('end', () => resolve(Buffer.concat(chunks)));
+      res.on('error', reject);
+    });
+  });
+}
+
+// Method 2: Prince Technet API
 async function enhanceViaPrince(buffer) {
   try {
-    const url = await uploadToCatbox(buffer);
+    const url = await uploadToCatbox(buffer).catch(() => uploadToTelegraph(buffer));
     const apiUrl = `https://api.princetechn.com/api/tools/remini?apikey=prince&url=${encodeURIComponent(url)}`;
     const response = await axios.get(apiUrl, {
       timeout: TIMEOUT,
@@ -124,66 +155,35 @@ async function enhanceViaPrince(buffer) {
       });
       return Buffer.from(imgResp.data);
     }
-    throw new Error('Invalid API response');
+    throw new Error('Invalid Prince API response');
   } catch (e) {
     throw e;
   }
 }
 
-// Method 2: David Cyril Tech API
+// Method 3: David Cyril Tech API
 async function enhanceViaDavid(buffer) {
   try {
-    const url = await uploadToCatbox(buffer);
+    const url = await uploadToCatbox(buffer).catch(() => uploadToTelegraph(buffer));
     const apiUrl = `https://apis.davidcyriltech.my.id/remini?url=${encodeURIComponent(url)}`;
     const response = await axios.get(apiUrl, {
       responseType: 'arraybuffer',
       timeout: TIMEOUT,
       headers: { 'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] }
     });
-    // The API returns the image directly on success
     if (response.status === 200 && response.data.length > 1000) {
       return Buffer.from(response.data);
     }
-    throw new Error('Invalid image data');
+    throw new Error('Invalid David API response');
   } catch (e) {
     throw e;
   }
 }
 
-// Method 3: Vyro.ai (inferenceengine) – works directly with buffer
-async function enhanceViaVyro(buffer) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const form = new FormData();
-      form.append('model_version', '1');
-      form.append('image', buffer, { filename: 'enhance_image_body.jpg', contentType: 'image/jpeg' });
-
-      const response = await axios.post('https://inferenceengine.vyro.ai/enhance', form, {
-        headers: {
-          ...form.getHeaders(),
-          'User-Agent': 'okhttp/4.9.3',
-          'Connection': 'Keep-Alive',
-          'Accept-Encoding': 'gzip'
-        },
-        responseType: 'arraybuffer',
-        timeout: TIMEOUT
-      });
-
-      if (response.status === 200 && response.data.length > 1000) {
-        resolve(Buffer.from(response.data));
-      } else {
-        reject(new Error('Vyro returned invalid data'));
-      }
-    } catch (e) {
-      reject(e);
-    }
-  });
-}
-
-// Method 4: remini-api.onrender.com (fallback)
+// Method 4: Remini API (render.com)
 async function enhanceViaReminiApi(buffer) {
   try {
-    const url = await uploadToCatbox(buffer);
+    const url = await uploadToCatbox(buffer).catch(() => uploadToTelegraph(buffer));
     const apiUrl = `https://remini-api.onrender.com/enhance-image?url=${encodeURIComponent(url)}`;
     const response = await axios.get(apiUrl, {
       timeout: TIMEOUT,
@@ -196,29 +196,7 @@ async function enhanceViaReminiApi(buffer) {
       });
       return Buffer.from(imgResp.data);
     }
-    throw new Error('Invalid API response');
-  } catch (e) {
-    throw e;
-  }
-}
-
-// Method 5: Neoxr API (if available – but no key shown, try generic)
-async function enhanceViaNeoxr(buffer) {
-  try {
-    const url = await uploadToTelegraph(buffer);
-    const apiUrl = `https://api.neoxr.my.id/api/remini?url=${encodeURIComponent(url)}`; // guess endpoint
-    const response = await axios.get(apiUrl, {
-      timeout: TIMEOUT,
-      headers: { 'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)] }
-    });
-    if (response.data?.data?.url) {
-      const imgResp = await axios.get(response.data.data.url, {
-        responseType: 'arraybuffer',
-        timeout: 30000
-      });
-      return Buffer.from(imgResp.data);
-    }
-    throw new Error('Invalid Neoxr response');
+    throw new Error('Invalid Remini API response');
   } catch (e) {
     throw e;
   }
@@ -259,13 +237,12 @@ module.exports = {
       await react('⏳');
       await reply('⏳ Enhancing image... (may take up to 60 seconds)');
 
-      // Define methods in priority order
+      // Define methods in priority order (Vyro first)
       const methods = [
+        { name: 'Vyro.ai', func: enhanceViaVyro },
         { name: 'Prince Technet', func: enhanceViaPrince },
         { name: 'David Cyril', func: enhanceViaDavid },
-        { name: 'Remini API', func: enhanceViaReminiApi },
-        { name: 'Vyro.ai', func: enhanceViaVyro },
-        { name: 'Neoxr', func: enhanceViaNeoxr }
+        { name: 'Remini API', func: enhanceViaReminiApi }
       ];
 
       let lastError = null;
