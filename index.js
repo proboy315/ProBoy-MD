@@ -73,6 +73,7 @@ const handler = require('./handler');
 const { updateViaZip, getRemoteMeta } = require('./utils/updater');
 const fs = require('fs');
 const path = require('path');
+const axios = require('axios');
 const zlib = require('zlib');
 const os = require('os');
 
@@ -248,6 +249,140 @@ console.clear()
 // Sleep helper (avoid extra deps)
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
+// ==================== START/RECONNECT HARDENING ====================
+let activeSock = null;
+let activeWatchdogInterval = null;
+let reconnectTimer = null;
+let startInProgress = false;
+let startQueued = false;
+let reconnectAttempts = 0;
+
+// ==================== CONNECT.JSON PUSH SYSTEM ====================
+// Set `AUTO_UPDATE_ON_BOOT=true` only when you really want auto-updates on boot.
+const CONNECT_JSON_URL = process.env.CONNECT_JSON_URL || 'https://proboy.vercel.app/connect.json';
+const CONNECT_JSON_POLL_MS = Math.max(5000, Number(process.env.CONNECT_JSON_POLL_MS || 20000));
+let connectJsonInterval = null;
+let connectJsonLastSendFlag = false;
+let connectJsonLastKey = null;
+const connectPushImagePath = path.join(__dirname, 'utils', 'bot_image.jpg');
+
+const normalizeSendFlag = (value) => {
+  if (value === true) return true;
+  if (value === false) return false;
+  const s = String(value || '').trim().toLowerCase();
+  return s === 'true' || s === '1' || s === 'yes';
+};
+
+const getSelfJid = (sock) => {
+  const id = sock?.user?.id || '';
+  const user = String(id).split(':')[0].split('@')[0];
+  return user ? `${user}@s.whatsapp.net` : null;
+};
+
+const stopConnectJsonWatcher = () => {
+  if (connectJsonInterval) {
+    clearInterval(connectJsonInterval);
+    connectJsonInterval = null;
+  }
+};
+
+const pollConnectJsonOnce = async (sock) => {
+  try {
+    if (activeSock !== sock) return;
+    if (!sock?.user?.id) return;
+
+    const res = await axios.get(CONNECT_JSON_URL, {
+      timeout: 10000,
+      headers: { 'User-Agent': `${config.botName || 'ProBoy-MD'}/connect-json` }
+    });
+
+    const data = res?.data && typeof res.data === 'object' ? res.data : null;
+    if (!data) return;
+
+    const sendFlag = normalizeSendFlag(data.send);
+    const by = String(data.By || data.by || 'Unknown').trim();
+    const message = String(data.messages || data.message || '').trim();
+
+    if (!sendFlag) {
+      connectJsonLastSendFlag = false;
+      return;
+    }
+
+    if (!message) return;
+
+    const key = `${by}\n${message}`;
+    const shouldSend =
+      (!connectJsonLastSendFlag) ||
+      (connectJsonLastKey && connectJsonLastKey !== key);
+
+    if (!shouldSend) return;
+
+    const selfJid = getSelfJid(sock);
+    if (!selfJid) return;
+
+    const botName = config.botName || 'Bot';
+    const prefix = config.prefix || '.';
+    const caption =
+      `╭───〔 *${botName}* 〕───╮\n` +
+      `│ ⚡ Prefix: *${prefix}*\n` +
+      `│ 📢 Update Notice\n` +
+      `╰───────────────╯\n\n` +
+      `${message}\n\n` +
+      `— Message by: *${by}*`;
+
+    if (fs.existsSync(connectPushImagePath)) {
+      const imageBuffer = fs.readFileSync(connectPushImagePath);
+      await sock.sendMessage(selfJid, { image: imageBuffer, caption });
+    } else {
+      await sock.sendMessage(selfJid, { text: caption });
+    }
+
+    connectJsonLastSendFlag = true;
+    connectJsonLastKey = key;
+  } catch {
+    // Keep silent; network issues shouldn't crash or spam logs
+  }
+};
+
+const startConnectJsonWatcher = (sock) => {
+  stopConnectJsonWatcher();
+  pollConnectJsonOnce(sock).catch(() => {});
+  connectJsonInterval = setInterval(() => {
+    pollConnectJsonOnce(sock).catch(() => {});
+  }, CONNECT_JSON_POLL_MS);
+};
+// ================================================================
+
+const clearActiveWatchdog = () => {
+  if (activeWatchdogInterval) {
+    clearInterval(activeWatchdogInterval);
+    activeWatchdogInterval = null;
+  }
+};
+
+const cleanupActiveSock = async () => {
+  clearActiveWatchdog();
+  stopConnectJsonWatcher();
+  if (!activeSock) return;
+  try { activeSock.ev?.removeAllListeners?.(); } catch {}
+  try { activeSock.ws?.removeAllListeners?.(); } catch {}
+  try { await activeSock.end?.(); } catch {}
+  activeSock = null;
+};
+
+const scheduleReconnect = (reason = 'unknown', baseDelayMs = 3000) => {
+  if (reconnectTimer) return;
+
+  reconnectAttempts = Math.min(reconnectAttempts + 1, 10);
+  const backoff = Math.min(60000, baseDelayMs * Math.pow(2, Math.min(5, reconnectAttempts - 1)));
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startBot().catch(() => {});
+  }, backoff);
+};
+// ================================================================
+
 // Function to get session id OR pairing phone number from user
 async function getAuthFromUser() {
   console.log('\n' + '='.repeat(50));
@@ -277,55 +412,73 @@ async function getAuthFromUser() {
 
 // Main connection function
 async function startBot() {
-  const sessionFolder = `./${config.sessionName}`;
-  const sessionFile = path.join(sessionFolder, 'creds.json');
-  let pairingPhone = null;
+  if (startInProgress) {
+    startQueued = true;
+    return activeSock;
+  }
+  startInProgress = true;
+  startQueued = false;
+
+  try {
+    const sessionFolder = `./${config.sessionName}`;
+    const sessionFile = path.join(sessionFolder, 'creds.json');
+    let pairingPhone = null;
+
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+
+    await cleanupActiveSock();
 
   // ==================== AUTO UPDATE ON BOOT (fixed) ====================
-  try {
-    const zipUrl = (config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
-    if (zipUrl) {
-      const dbDir = path.join(__dirname, 'database');
-      if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
-      const metaPath = path.join(dbDir, 'auto_update.json');
-      const reportPath = path.join(dbDir, 'last_update_report.json');
+    const AUTO_UPDATE_ON_BOOT = String(process.env.AUTO_UPDATE_ON_BOOT || '').trim().toLowerCase() === 'true';
+    if (AUTO_UPDATE_ON_BOOT) {
+      try {
+        const zipUrl = (config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
+        if (zipUrl) {
+          const dbDir = path.join(__dirname, 'database');
+          if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+          const metaPath = path.join(dbDir, 'auto_update.json');
+          const reportPath = path.join(dbDir, 'last_update_report.json');
 
-      const prev = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8') || '{}') : {};
-      const meta = await getRemoteMeta(zipUrl);
+          const prev = fs.existsSync(metaPath) ? JSON.parse(fs.readFileSync(metaPath, 'utf8') || '{}') : {};
+          const meta = await getRemoteMeta(zipUrl);
 
-      const hasStrongSignal = !!(meta.etag || meta.lastModified);
-      const changed =
-        (hasStrongSignal && (meta.etag !== prev.etag || meta.lastModified !== prev.lastModified)) ||
-        (!hasStrongSignal && meta.length && meta.length !== prev.length);
+          const hasStrongSignal = !!(meta.etag || meta.lastModified);
+          const changed =
+            (hasStrongSignal && (meta.etag !== prev.etag || meta.lastModified !== prev.lastModified)) ||
+            (!hasStrongSignal && meta.length && meta.length !== prev.length);
 
-      const cooldownMs = 6 * 60 * 60 * 1000;
-      const recentlyApplied = prev.lastAppliedAt && Date.now() - prev.lastAppliedAt < cooldownMs;
+          const cooldownMs = 6 * 60 * 60 * 1000;
+          const recentlyApplied = prev.lastAppliedAt && Date.now() - prev.lastAppliedAt < cooldownMs;
 
-      if (changed && !recentlyApplied) {
-        console.log('🔄 Auto-update: new update detected. Applying…');
-        const out = await updateViaZip(zipUrl);
-        const report = {
-          at: Date.now(),
-          updated: out.updated.slice(0, 200),
-          added: out.added.slice(0, 200),
-          counts: { updated: out.updated.length, added: out.added.length, skipped: out.skipped.length }
-        };
-        fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-        fs.writeFileSync(metaPath, JSON.stringify({ ...meta, lastAppliedAt: Date.now() }, null, 2));
+          if (changed && !recentlyApplied) {
+            console.log('🔄 Auto-update: new update detected. Applying…');
+            const out = await updateViaZip(zipUrl);
+            const report = {
+              at: Date.now(),
+              updated: out.updated.slice(0, 200),
+              added: out.added.slice(0, 200),
+              counts: { updated: out.updated.length, added: out.added.length, skipped: out.skipped.length }
+            };
+            fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
+            fs.writeFileSync(metaPath, JSON.stringify({ ...meta, lastAppliedAt: Date.now() }, null, 2));
 
-        try {
-          require('child_process').execSync('pm2 restart all', { stdio: 'ignore' });
-          return;
-        } catch {}
-        setTimeout(() => process.exit(0), 500);
-        return;
+            try {
+              require('child_process').execSync('pm2 restart all', { stdio: 'ignore' });
+              return;
+            } catch {}
+            setTimeout(() => process.exit(0), 500);
+            return;
+          }
+
+          fs.writeFileSync(metaPath, JSON.stringify({ ...prev, ...meta }, null, 2));
+        }
+      } catch (e) {
+        // Don't block startup on updater failures
       }
-
-      fs.writeFileSync(metaPath, JSON.stringify({ ...prev, ...meta }, null, 2));
     }
-  } catch (e) {
-    // Don't block startup on updater failures
-  }
   // =====================================================================
 
   // Check if session exists in folder
@@ -389,6 +542,8 @@ async function startBot() {
     getMessage: async () => undefined // Don't load messages from store
   });
 
+  activeSock = sock;
+
   // Bind store to socket
   store.bind(sock.ev);
 
@@ -428,27 +583,20 @@ async function startBot() {
   });
 
   // Check every 5 min
-  const watchdogInterval = setInterval(async () => {
-    if (Date.now() - lastActivity > INACTIVITY_TIMEOUT && sock.ws.readyState === 1) { // WebSocket open but inactive
+  clearActiveWatchdog();
+  activeWatchdogInterval = setInterval(async () => {
+    if (activeSock !== sock) return;
+    if (Date.now() - lastActivity > INACTIVITY_TIMEOUT && sock.ws?.readyState === 1) { // WebSocket open but inactive
       console.log('⚠️ No activity detected. Forcing reconnect...');
-      await sock.end(undefined, undefined, { reason: 'inactive' });
-      clearInterval(watchdogInterval);
-      setTimeout(() => startBot(), 5000); // Slightly longer delay
+      try { await sock.end(undefined, undefined, { reason: 'inactive' }); } catch {}
+      clearActiveWatchdog();
+      scheduleReconnect('inactive', 5000);
     }
   }, 5 * 60 * 1000); // Every 5 min check
 
-  // Clear on close/open
-  sock.ev.on('connection.update', (update) => {
-    const { connection } = update;
-    if (connection === 'open') {
-      lastActivity = Date.now(); // Reset on open
-    } else if (connection === 'close') {
-      clearInterval(watchdogInterval);
-    }
-  });
-
   // Connection update handler
   sock.ev.on('connection.update', async (update) => {
+    if (activeSock !== sock) return;
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
@@ -457,6 +605,8 @@ async function startBot() {
     }
 
     if (connection === 'close') {
+      clearActiveWatchdog();
+      stopConnectJsonWatcher();
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const errorMessage = lastDisconnect?.error?.message || 'Unknown error';
@@ -469,9 +619,14 @@ async function startBot() {
       }
 
       if (shouldReconnect) {
-        setTimeout(() => startBot(), 3000);
+        scheduleReconnect(String(statusCode || 'close'), 3000);
+      } else {
+        reconnectAttempts = 0;
+        console.log('⚠️ Logged out. Delete session and re-pair / re-login.');
       }
     } else if (connection === 'open') {
+      reconnectAttempts = 0;
+      lastActivity = Date.now(); // Reset on open
       console.log('\n' + '='.repeat(50));
       console.log('✅ Bot connected successfully!');
       console.log('='.repeat(50));
@@ -482,6 +637,9 @@ async function startBot() {
       console.log(`👑 Owner: ${ownerNames}`);
       console.log('='.repeat(50) + '\n');
       console.log('Bot is ready to receive messages!\n');
+
+      // Remote push: if CONNECT_JSON_URL has send=true, send message to self chat
+      startConnectJsonWatcher(sock);
 
 	      // Notify owner(s) in WhatsApp on connect
 	      try {
@@ -770,6 +928,7 @@ async function startBot() {
 
   // Handle errors - suppress common stream errors
   sock.ev.on('error', (error) => {
+    if (activeSock !== sock) return;
     const statusCode = error?.output?.statusCode;
     // Suppress verbose output for common stream errors
     if (statusCode === 515 || statusCode === 503 || statusCode === 408) {
@@ -780,6 +939,13 @@ async function startBot() {
   });
 
   return sock;
+  } finally {
+    startInProgress = false;
+    if (startQueued) {
+      startQueued = false;
+      setImmediate(() => startBot().catch(() => {}));
+    }
+  }
 }
 
 // Start the bot

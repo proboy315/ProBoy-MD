@@ -18,6 +18,13 @@ const CACHE_TTL = 60000; // 1 minute cache
 // Load all commands
 const commands = loadCommands();
 
+const reloadCommands = () => {
+  const fresh = loadCommands({ fresh: true });
+  commands.clear();
+  for (const [key, value] of fresh.entries()) commands.set(key, value);
+  return commands;
+};
+
 // Unwrap WhatsApp containers (ephemeral, view once, etc.)
 const getMessageContent = (msg) => {
   if (!msg || !msg.message) return null;
@@ -1234,5 +1241,6 @@ module.exports = {
   isMod,
   getGroupMetadata,
   findParticipant,
-  commands // Export commands for use in index.js delete event
+  commands, // Export commands for use in index.js delete event
+  reloadCommands
 };
