@@ -172,11 +172,11 @@ module.exports = {
 
       // Media Commands
 
-      if (categories.download) {
+      if (categories.media) {
 
-        menuText += `╭════〘 _DOWNLOADER COMMANDS_ 〙════⊷❍\n`;
+        menuText += `╭════〘 _MEDIA COMMANDS_ 〙════⊷❍\n`;
 
-        categories.download.forEach(cmd => {
+        categories.media.forEach(cmd => {
 
           menuText += `┃✯│  _${config.prefix}${cmd.name}_\n`;
 
