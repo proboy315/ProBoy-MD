@@ -48,7 +48,7 @@ function formatRating(rating) {
 module.exports = {
   name: 'apk',
   aliases: ['playstore', 'appsearch', 'androidapp'],
-  category: 'utility',
+  category: 'media',
   description: '📱 Search for Android apps on Google Play Store',
   usage: '.apk <app name or keyword>',
 
