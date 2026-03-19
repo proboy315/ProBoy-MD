@@ -1,11 +1,10 @@
 /**
- * Play Store Search Plugin
- * Searches for Android apps using PrinceTech API.
- * API: https://api.princetechn.com/api/search/playstore?apikey=prince&query=<term>
+ * APK Download Plugin
+ * Downloads APK files using PrinceTech APK download API.
+ * API: https://api.princetechn.com/api/download/apkdl?apikey=prince&appName=<app_name>
  */
 
 const axios = require('axios');
-const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -16,13 +15,14 @@ const USER_AGENTS = [
 ];
 
 // Retry function with exponential backoff
-async function fetchWithRetry(url, maxRetries = 3, timeout = 15000) {
+async function fetchWithRetry(url, maxRetries = 3, timeout = 30000, responseType = 'json') {
   let lastError;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       const userAgent = USER_AGENTS[(attempt - 1) % USER_AGENTS.length];
       const response = await axios.get(url, {
         timeout,
+        responseType,
         headers: { 'User-Agent': userAgent }
       });
       return response;
@@ -36,21 +36,17 @@ async function fetchWithRetry(url, maxRetries = 3, timeout = 15000) {
   throw lastError;
 }
 
-// Format rating with stars (optional)
-function formatRating(rating) {
-  const num = parseFloat(rating) || 0;
-  const full = Math.floor(num);
-  const half = num - full >= 0.5 ? 1 : 0;
-  const empty = 5 - full - half;
-  return '⭐'.repeat(full) + (half ? '½' : '') + '☆'.repeat(empty);
+// Basic input validation (no spaces? app names can have spaces, so just ensure non-empty)
+function isValidAppName(name) {
+  return name && name.trim().length > 0;
 }
 
 module.exports = {
   name: 'apk',
-  aliases: ['playstore', 'appsearch', 'androidapp'],
+  aliases: ['apkdownload', 'getapk', 'downloadapk'],
   category: 'media',
-  description: '📱 Search for Android apps on Google Play Store',
-  usage: '.apk <app name or keyword>',
+  description: '📱 Download APK files for Android apps',
+  usage: '.apk <app name>',
 
   async execute(sock, msg, args, extra) {
     const { reply, react, from } = extra;
@@ -58,107 +54,127 @@ module.exports = {
     try {
       if (!args.length) {
         return reply(
-          '❌ Please provide an app name or keyword.\n\n' +
+          '❌ Please provide an app name.\n\n' +
           'Example: `.apk WhatsApp`'
         );
       }
 
-      const query = args.join(' ');
-      await react('🔍');
+      const appName = args.join(' ').trim();
 
-      const statusMsg = await sock.sendMessage(from, { text: `⏳ Searching Play Store for *${query}*...` }, { quoted: msg });
+      if (!isValidAppName(appName)) {
+        return reply('❌ Invalid app name.');
+      }
+
+      await react('📥');
+
+      const statusMsg = await sock.sendMessage(from, { text: `⏳ Fetching APK details for *${appName}*...` }, { quoted: msg });
       const msgKey = statusMsg.key;
 
-      const apiUrl = `https://api.princetechn.com/api/search/playstore?apikey=prince&query=${encodeURIComponent(query)}`;
+      // Step 1: Get APK info from API
+      const infoUrl = `https://api.princetechn.com/api/download/apkdl?apikey=prince&appName=${encodeURIComponent(appName)}`;
 
-      let response;
+      let infoResponse;
       try {
-        response = await fetchWithRetry(apiUrl, 3, 15000);
+        infoResponse = await fetchWithRetry(infoUrl, 3, 15000);
       } catch (err) {
         await sock.sendMessage(from, {
-          text: `❌ Failed after multiple attempts. API may be down.`,
+          text: `❌ Failed to fetch APK info after multiple attempts. API may be down.`,
           edit: msgKey
         });
         await react('❌');
         return;
       }
 
-      const data = response.data;
+      const infoData = infoResponse.data;
 
-      if (!data || !data.success || !Array.isArray(data.results) || data.results.length === 0) {
+      if (!infoData || !infoData.success || !infoData.result) {
         await sock.sendMessage(from, {
-          text: `❌ No apps found for *${query}*.`,
+          text: `❌ No APK found for *${appName}*.`,
           edit: msgKey
         });
         await react('❌');
         return;
       }
 
-      const results = data.results;
-      const total = results.length;
+      const { appname, appicon, developer, download_url } = infoData.result;
 
-      // Limit to 10 results to avoid spam
-      const maxResults = 10;
-      const displayResults = results.slice(0, maxResults);
-
-      // Edit status message to show count
-      await sock.sendMessage(from, {
-        text: `📱 Found *${total}* app${total > 1 ? 's' : ''}. Showing top ${displayResults.length}.`,
-        edit: msgKey
-      });
-
-      // Send each app as a separate message
-      for (let i = 0; i < displayResults.length; i++) {
-        const app = displayResults[i];
-        const appNumber = i + 1;
-
-        // Build text content
-        let text = `╔══════════════════════╗\n`;
-        text += `║   *📱 App #${appNumber}*   ║\n`;
-        text += `╚══════════════════════╝\n\n`;
-        text += `*${app.name}*\n`;
-        text += `👤 *Developer:* ${app.developer}\n`;
-        text += `🆔 *App ID:* \`${app.appId}\`\n`;
-        text += `⭐ *Rating:* ${app.rating} ${formatRating(app.rating)}\n`;
-        text += `📝 *Summary:* ${app.summary}\n\n`;
-        text += `🔗 *Play Store:* ${app.link}\n`;
-        if (app.link_dev) text += `👥 *More from developer:* ${app.link_dev}`;
-
-        // Try to send with icon
-        if (app.img) {
-          try {
-            const imgResp = await axios.get(app.img, {
-              responseType: 'arraybuffer',
-              timeout: 10000,
-              headers: { 'User-Agent': USER_AGENTS[0] }
-            });
-            const imgBuffer = Buffer.from(imgResp.data);
-
-            await sock.sendMessage(from, {
-              image: imgBuffer,
-              caption: text
-            }, { quoted: msg });
-          } catch (err) {
-            // Icon download failed, send text only
-            console.log(`Icon download failed for ${app.name}, sending text`);
-            await sock.sendMessage(from, { text }, { quoted: msg });
-          }
-        } else {
-          await sock.sendMessage(from, { text }, { quoted: msg });
-        }
-
-        // Small delay between messages
-        await new Promise(resolve => setTimeout(resolve, 500));
+      if (!download_url) {
+        await sock.sendMessage(from, {
+          text: `❌ APK download URL not available for *${appname}*.`,
+          edit: msgKey
+        });
+        await react('❌');
+        return;
       }
 
-      // Final confirmation
+      // Update status
       await sock.sendMessage(from, {
-        text: `✅ Sent ${displayResults.length} app result${displayResults.length > 1 ? 's' : ''}.`,
+        text: `📥 Downloading APK: *${appname}*...`,
         edit: msgKey
       });
+
+      // Step 2: Download the APK file
+      let apkBuffer;
+      try {
+        const apkResponse = await fetchWithRetry(download_url, 2, 60000, 'arraybuffer');
+        apkBuffer = Buffer.from(apkResponse.data);
+      } catch (err) {
+        await sock.sendMessage(from, {
+          text: `❌ Failed to download APK file.`,
+          edit: msgKey
+        });
+        await react('❌');
+        return;
+      }
+
+      // Step 3: Download the app icon (for thumbnail)
+      let iconBuffer = null;
+      if (appicon) {
+        try {
+          const iconResponse = await axios.get(appicon, {
+            responseType: 'arraybuffer',
+            timeout: 10000,
+            headers: { 'User-Agent': USER_AGENTS[0] }
+          });
+          iconBuffer = Buffer.from(iconResponse.data);
+        } catch (err) {
+          console.log('Icon download failed, sending without thumbnail');
+        }
+      }
+
+      // Step 4: Send the APK as a document with thumbnail
+      const fileName = `${appname.replace(/[^a-zA-Z0-9]/g, '_')}.apk`;
+
+      const caption = `╔══════════════════════╗
+║   *📱 APK File*     ║
+╚══════════════════════╝
+
+📦 *App:* ${appname}
+👤 *Developer:* ${developer || 'Unknown'}
+🔗 *Source:* ${download_url}
+
+_Powered by ProBoy-MD_`;
+
+      const messageOptions = {
+        document: apkBuffer,
+        fileName: fileName,
+        mimetype: 'application/vnd.android.package-archive',
+        caption: caption
+      };
+
+      // Add thumbnail if available
+      if (iconBuffer) {
+        messageOptions.thumbnail = iconBuffer; // Baileys accepts thumbnail as buffer
+      }
+
+      await sock.sendMessage(from, messageOptions, { quoted: msg });
+
+      // Delete the status message
+      try { await sock.sendMessage(from, { delete: msgKey }); } catch {}
+
       await react('✅');
     } catch (error) {
-      console.error('APK command error:', error);
+      console.error('APK download error:', error);
       await reply(`❌ Unexpected error: ${error.message}`);
       await react('❌');
     }
