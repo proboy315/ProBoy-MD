@@ -9,7 +9,7 @@ const config = require('../../config');
 // Allowed categories (must match subfolder names in commands/)
 const validCategories = [
   'admin', 'ai', 'anime', 'fun', 'general',
-  'group', 'media', 'owner', 'textmaker', 'utility'
+  'group', 'download', 'media', 'owner', 'textmaker', 'utility'
 ];
 
 /**
@@ -141,6 +141,23 @@ module.exports = {
         throw new Error(`Plugin failed to load: ${loadErr.message}`);
       }
 
+      // --- Hot-load without restarting ---
+      let hotLoaded = false;
+      try {
+        const handler = require('../../handler');
+        if (typeof handler.reloadCommands === 'function') {
+          handler.reloadCommands();
+          hotLoaded = true;
+
+          const installed = handler.commands?.get?.(pluginInfo.name);
+          if (installed && typeof installed.init === 'function') {
+            try { await installed.init(sock); } catch {}
+          }
+        }
+      } catch {
+        hotLoaded = false;
+      }
+
       // Build success message
       const details = [
         '✅ *Plugin installed successfully!*',
@@ -173,7 +190,8 @@ module.exports = {
         await extra.react('✅');
         restartBot(); // This will exit the process after a short delay
       } else {
-        details.push('', '🔄 Please restart the bot to load the new command.');
+        if (hotLoaded) details.push('', '✅ Plugin loaded (no restart needed).');
+        else details.push('', '🔄 Please restart the bot to load the new command.');
         await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
         await extra.react('✅');
       }
