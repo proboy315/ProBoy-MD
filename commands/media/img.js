@@ -38,7 +38,7 @@ async function fetchWithRetry(url, maxRetries = 3, timeout = 15000) {
 module.exports = {
   name: 'img',
   aliases: ['googleimage', 'image', 'imagesearch'],
-  category: 'utility',
+  category: 'media',
   description: '🖼️ Search for images using Google (up to 10 results)',
   usage: '.img <search term>',
 
