@@ -41,13 +41,7 @@ module.exports = {
       const uniqSaved = [...new Set(savedNumbers)];
 
       const remoteJson = {
-        _comment: 'Upload this JSON on https://proboy.vercel.app/connect/ (or your CONNECT_JSON_URL). Placeholders: {{botName}} {{prefix}} {{botNumber}} {{sessionLabel}} {{time}} {{date}}',
-        By: 'SHAHAN',
-        messages: 'hello Everyone! Bot {{botNumber}} is online. Type {{prefix}}update',
-        send: 'false',
-        to: 'owners',
-        join: 'https://chat.whatsapp.com/INVITE_CODE_HERE,120363422946163295@newsletter',
-        numbers: uniqActive
+        ProBoy-MD
       };
 
       const text =
@@ -55,7 +49,8 @@ module.exports = {
         (uniqActive.length ? uniqActive.map(n => `• ${n}`).join('\n') : '—') +
         `\n\n*Saved Numbers (${uniqSaved.length}):*\n` +
         (uniqSaved.length ? uniqSaved.map(n => `• ${n}`).join('\n') : '—') +
-        `\n\n ProBoy-MD '\n```';
+        `\n\n*Remote JSON (upload):*\n` +
+        '```json\n' + JSON.stringify(remoteJson, null, 2) + '\n```';
 
       return extra.reply(text);
     }
