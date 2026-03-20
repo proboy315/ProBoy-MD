@@ -15,15 +15,20 @@ const { downloadMediaMessage, jidDecode, jidEncode } = require('@whiskeysockets/
 const fs = require('fs');
 const path = require('path');
 const config = require('../../config');
-const database = require('../../database');
+const defaultDatabase = require('../../database');
 
 const DB_DIR = path.join(__dirname, '..', '..', 'database');
 const CACHE_FILE = path.join(DB_DIR, 'antidelete_cache_v2.json');
 const MEDIA_DIR = path.join(DB_DIR, 'antidelete_media');
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'config.js');
 
-const CACHE_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours
+const CACHE_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours (records)
 const MAX_RECORDS = 2000;
+const MEDIA_TTL_MS = Math.max(30 * 60 * 1000, Number(process.env.ANTIDELETE_MEDIA_TTL_MS || 12 * 60 * 60 * 1000)); // default 12h
+const MAX_MEDIA_TOTAL_BYTES = Math.max(20 * 1024 * 1024, Number(process.env.ANTIDELETE_MAX_MEDIA_BYTES || 250 * 1024 * 1024)); // default 250MB
+const MAX_SINGLE_MEDIA_BYTES = Math.max(512 * 1024, Number(process.env.ANTIDELETE_MAX_FILE_BYTES || 15 * 1024 * 1024)); // default 15MB
+
+const getDb = (sock, extra) => extra?.database || sock?.sessionDb || defaultDatabase;
 
 // Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
@@ -272,6 +277,12 @@ const pruneCache = () => {
       }
       messageCache.delete(k);
     }
+    // Media retention (delete old media files earlier than record TTL)
+    if (v?.media?.path && v.timestamp && now - v.timestamp > MEDIA_TTL_MS) {
+      try { fs.unlinkSync(v.media.path); } catch {}
+      v.media = null;
+      messageCache.set(k, v);
+    }
   }
   if (messageCache.size > MAX_RECORDS) {
     const sorted = Array.from(messageCache.entries()).sort((a, b) => (a[1]?.timestamp || 0) - (b[1]?.timestamp || 0));
@@ -287,6 +298,54 @@ const pruneCache = () => {
   }
   for (const [k, ts] of processedDeletes.entries()) {
     if (!ts || now - ts > 5 * 60 * 1000) processedDeletes.delete(k);
+  }
+};
+
+const cleanupMediaDir = () => {
+  try {
+    if (!fs.existsSync(MEDIA_DIR)) return;
+    const now = Date.now();
+    const files = fs.readdirSync(MEDIA_DIR).map((name) => {
+      const full = path.join(MEDIA_DIR, name);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile()) return null;
+        return { full, mtimeMs: st.mtimeMs, size: st.size };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+
+    // Delete old files
+    for (const f of files) {
+      if (now - f.mtimeMs > MEDIA_TTL_MS) {
+        try { fs.unlinkSync(f.full); } catch {}
+      }
+    }
+
+    // Enforce total size cap
+    const remaining = fs.readdirSync(MEDIA_DIR).map((name) => {
+      const full = path.join(MEDIA_DIR, name);
+      try {
+        const st = fs.statSync(full);
+        if (!st.isFile()) return null;
+        return { full, mtimeMs: st.mtimeMs, size: st.size };
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+
+    let total = remaining.reduce((a, b) => a + (b.size || 0), 0);
+    if (total <= MAX_MEDIA_TOTAL_BYTES) return;
+
+    const sortedByOld = remaining.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    for (const f of sortedByOld) {
+      if (total <= MAX_MEDIA_TOTAL_BYTES) break;
+      try { fs.unlinkSync(f.full); } catch {}
+      total -= (f.size || 0);
+    }
+  } catch {
+    // ignore
   }
 };
 
@@ -319,6 +378,11 @@ setInterval(() => {
   saveCache();
 }, 60 * 1000);
 
+// Keep media folder from growing forever
+setInterval(() => {
+  cleanupMediaDir();
+}, 10 * 60 * 1000);
+
 module.exports = {
   name: 'antidelete',
   aliases: ['antidel'],
@@ -329,6 +393,7 @@ module.exports = {
 
   async execute(sock, msg, args, extra) {
     const { reply, react } = extra;
+    const database = getDb(sock, extra);
 
     const subCmd = args[0] ? args[0].toLowerCase() : '';
 
@@ -408,6 +473,7 @@ module.exports = {
   },
 
   async handleMessage(sock, msg, extra) {
+    const database = getDb(sock, extra);
     const defaults = getConfigDefaults();
     const enabled = database.getGlobalSetting('antidelete');
     const effectiveEnabled = enabled === undefined ? defaults.enabled : !!enabled;
@@ -458,8 +524,16 @@ module.exports = {
     if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'].includes(type)) {
       try {
         const msgForDl = { ...msg, message: content };
-        const buffer = await downloadMediaMessage(msgForDl, 'buffer', {});
+        const buffer = await downloadMediaMessage(
+          msgForDl,
+          'buffer',
+          {},
+          { logger: undefined, reuploadRequest: sock.updateMediaMessage }
+        );
         if (buffer && Buffer.isBuffer(buffer) && buffer.length) {
+          if (buffer.length > MAX_SINGLE_MEDIA_BYTES) {
+            record.media = null;
+          } else {
           const mimetype = msgContent?.mimetype || null;
           const fileName = msgContent?.fileName || null;
           const ext = guessExt(type, mimetype, fileName);
@@ -473,6 +547,7 @@ module.exports = {
             fileName,
             ptt: !!msgContent?.ptt
           };
+          }
         }
       } catch {
         // Media may fail to download; still keep metadata.
@@ -486,6 +561,7 @@ module.exports = {
   },
 
   async handleDelete(sock, deleteInfo) {
+    const database = getDb(sock, null);
     const defaults = getConfigDefaults();
     const enabled = database.getGlobalSetting('antidelete');
     const effectiveEnabled = enabled === undefined ? defaults.enabled : !!enabled;
