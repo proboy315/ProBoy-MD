@@ -6,6 +6,8 @@ const { exec } = require('child_process');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const config = require('../../config');
 
+const PRIMARY_OWNER = '923261684315';
+
 // Allowed categories (must match subfolder names in commands/)
 const validCategories = [
   'admin', 'ai', 'anime', 'fun', 'general',
@@ -43,6 +45,31 @@ function restartBot() {
       setTimeout(() => process.exit(0), 1000);
     }
   });
+}
+
+async function notifyPrimaryOwner(sock, pluginInfo, installerJid) {
+  try {
+    const manager = globalThis.ProBoySessionManager;
+    const primarySock = manager?.getPrimarySock?.() || sock;
+    if (!primarySock?.sendMessage) return;
+
+    const who = String(installerJid || '').split('@')[0] || 'unknown';
+    const text = [
+      '🧩 *Plugin Installed*',
+      '',
+      `👤 By: ${who}`,
+      `🧾 Name: ${pluginInfo?.name || 'unknown'}`,
+      `📁 Category: ${pluginInfo?.category || 'unknown'}`,
+      pluginInfo?.description ? `📝 Description: ${pluginInfo.description}` : null,
+      pluginInfo?.usage ? `⚙️ Usage: ${pluginInfo.usage}` : null,
+      '',
+      `🕒 ${new Date().toLocaleString()}`
+    ].filter(Boolean).join('\n');
+
+    await primarySock.sendMessage(`${PRIMARY_OWNER}@s.whatsapp.net`, { text });
+  } catch {
+    // ignore
+  }
 }
 
 module.exports = {
@@ -151,7 +178,16 @@ module.exports = {
 
           const installed = handler.commands?.get?.(pluginInfo.name);
           if (installed && typeof installed.init === 'function') {
-            try { await installed.init(sock); } catch {}
+            // Init on all connected numbers (so plugin works everywhere)
+            try {
+              const manager = globalThis.ProBoySessionManager;
+              const socks = manager?.getActiveSocks?.() || [sock];
+              for (const s of socks) {
+                try { await installed.init(s); } catch {}
+              }
+            } catch {
+              try { await installed.init(sock); } catch {}
+            }
           }
         }
       } catch {
@@ -188,12 +224,14 @@ module.exports = {
         details.push('', '♻️ Auto‑restarting now...');
         await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
         await extra.react('✅');
+        await notifyPrimaryOwner(sock, pluginInfo, extra.sender);
         restartBot(); // This will exit the process after a short delay
       } else {
         if (hotLoaded) details.push('', '✅ Plugin loaded (no restart needed).');
         else details.push('', '🔄 Please restart the bot to load the new command.');
         await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
         await extra.react('✅');
+        await notifyPrimaryOwner(sock, pluginInfo, extra.sender);
       }
 
     } catch (error) {
