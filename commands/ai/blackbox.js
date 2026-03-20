@@ -1,5 +1,4 @@
 const axios = require('axios');
-const { blackbox } = require('../../lib/scraper'); // adjust path if needed
 
 module.exports = {
   name: 'blackbox',
@@ -15,16 +14,11 @@ module.exports = {
 
     try {
       await react('👾');
-      
-      // Try scraper first
-      let result;
-      try {
-        result = await blackbox(query);
-      } catch (e) {
-        // Fallback to Prince API
-        const res = await axios.get(`https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(query)}`);
-        result = res.data?.result;
-      }
+      const res = await axios.get(
+        `https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(query)}`,
+        { timeout: 30000 }
+      );
+      const result = res.data?.result;
 
       if (!result) return reply('❌ No response from AI.');
 

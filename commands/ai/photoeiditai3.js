@@ -1,6 +1,5 @@
 const axios = require('axios');
-const { downloadMediaMessage } = require('prince-baileys');
-const { uploadToCatbox } = require('../../lib/functions');
+const { uploadToCatbox } = require('../../utils/catbox');
 
 const MODELS = ['ezremove_4.0', 'ezremove_4.0_pro', 'ezremove_3.0', 'ezremove_3.0_pro', 'nano_banana', 'nano_banana_pro', 'seedream_4', 'seedream_45'];
 const RESOLUTIONS = ['1K', '2K', '4K'];

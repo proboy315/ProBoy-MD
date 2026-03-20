@@ -1,6 +1,5 @@
 const axios = require('axios');
-const { downloadMediaMessage } = require('prince-baileys');
-const { uploadToCatbox } = require('../../lib/functions');
+const { uploadToCatbox } = require('../../utils/catbox');
 
 module.exports = {
   name: 'photoedit2',
