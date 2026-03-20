@@ -964,10 +964,10 @@ class SessionRunner {
         const msgId = msg.key.id;
         if (this.processedMessages.has(msgId)) continue;
 
-        // Status messages can be older than 5 minutes but still useful for anti-delete recovery.
+        // Some hosts have clock skew; keep this generous to avoid dropping real messages/commands.
         const MESSAGE_AGE_LIMIT = from === 'status@broadcast'
           ? 48 * 60 * 60 * 1000
-          : 5 * 60 * 1000;
+          : 24 * 60 * 60 * 1000;
         if (msg.messageTimestamp) {
           const messageAge = Date.now() - (msg.messageTimestamp * 1000);
           if (messageAge > MESSAGE_AGE_LIMIT) continue;
