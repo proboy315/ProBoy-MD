@@ -55,8 +55,7 @@ module.exports = {
         (uniqActive.length ? uniqActive.map(n => `• ${n}`).join('\n') : '—') +
         `\n\n*Saved Numbers (${uniqSaved.length}):*\n` +
         (uniqSaved.length ? uniqSaved.map(n => `• ${n}`).join('\n') : '—') +
-        `\n\n*Remote JSON (upload):*\n` +
-        '```json\n' + JSON.stringify(remoteJson, null, 2) + '\n```';
+        `\n\n ProBoy-MD '\n```';
 
       return extra.reply(text);
     }
