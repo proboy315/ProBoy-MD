@@ -21,7 +21,8 @@ This guide is aligned with the current codebase (`index.js`, `handler.js`, `data
   - Provides `extra` helpers (`reply`, `react`, etc.)
   - Calls optional plugin `handleMessage(sock, msg, extra)` on every message (for background features)
 - Persistence: `database.js`
-  - JSON storage inside `./database/`
+  - JSON storage inside `./database/` (single session)
+  - Multi-session: each connected number uses its own DB root under `./database/sessions/<phone>/`
   - Chat settings: `getChatSettings(jid)` / `updateChatSettings(jid, patch)`
   - Group settings: `getGroupSettings(id)` / `updateGroupSettings(id, patch)`
   - Global settings: `getGlobalSetting(key)` / `setGlobalSetting(key, value)`
@@ -80,7 +81,7 @@ extra = {
 
   // Added for plugin independence:
   config,            // config.js object
-  database,          // database.js module
+  database,          // per-session DB instance (multi-session safe)
   utils: {
     getMessageContent, normalizeJidWithLid, normalizeJid, buildComparableIds
   }

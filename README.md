@@ -18,8 +18,10 @@ All commands and the overall structure are written to make easy to install new P
 · Optimized for Stability – RAM‑optimized media handling (streaming, temp cleanup), better session handling via sessionID in config.js.
 · Auto‑Update on Boot – Checks for updates and applies them automatically.
 · Pairing Code & Session ID Support – No QR needed; connect using your phone number or a session string.
+· Multi‑Session Support – Connect multiple WhatsApp numbers at the same time (comma‑separated session IDs) and manage them with `.connect`.
 · Owner Utilities – Restart, update from ZIP, and more owner‑only tools.
 · Built‑in Anti‑Delete – Capture deleted messages (configurable).
+· Session‑Scoped Settings (Multi‑Session) – Each connected number saves its own settings in `database/sessions/<phone>/` so users don’t overwrite each other.
 
 ---
 
@@ -58,6 +60,20 @@ sessionID: 'ProBoy-MD!H4.....'
 
 Or set it via the `SESSION_ID` environment variable when hosting.
 The bot supports two ways to connect: Session ID or Pairing Code.
+
+### Multi‑session (2+ numbers)
+You can provide multiple session strings separated by commas:
+
+```text
+SESSION_ID=ProBoy-MD!....,ProBoy-MD!....
+```
+
+Or start the bot and paste multiple session IDs when prompted (comma‑separated).
+
+Owner command (primary owner only):
+- `.connect <ProBoy-MD!...>` add one (or multiple comma‑separated) sessions
+- `.connect status` shows connected numbers + JSON template for `proboy.vercel.app/connect/`
+- `.connect del <number>` disconnects an extra number (primary bot number cannot be removed)
 
 · Session ID (recommended for panels):
     Use the Pair Code Generator to scan a QR and obtain a session string starting with ProBoy-MD!....
@@ -106,6 +122,16 @@ Edit config.js (or set environment variables):
 
 ```bash
 npm start
+```
+
+### Production / Auto‑Restart (recommended)
+Use a process manager so it restarts on crash:
+
+```bash
+npm i -g pm2
+pm2 start index.js --name proboy-md --time
+pm2 save
+pm2 startup
 ```
 
 If you chose pairing code, enter your phone number when prompted.
@@ -448,4 +474,3 @@ This project contains code from various open‑source projects and AI tools, inc
 
 - **Baileys** – MIT License
 - Other libraries as listed in `package.json`
-

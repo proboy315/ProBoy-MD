@@ -3,7 +3,7 @@
  */
 
 const config = require('./config');
-const database = require('./database');
+const defaultDatabase = require('./database');
 const { loadCommands } = require('./utils/commandLoader');
 const { addMessage } = require('./utils/groupstats');
 const { jidDecode, jidEncode } = require('@whiskeysockets/baileys');
@@ -120,10 +120,15 @@ const isOwner = (sender) => {
   });
 };
 
-const isMod = (sender) => {
+const getDb = (sock) => sock?.sessionDb || defaultDatabase;
+
+const isMod = (sock, sender) => {
   const number = sender.split('@')[0];
-  return database.isModerator(number);
+  return getDb(sock).isModerator(number);
 };
+
+// Backwards compatibility for code paths that haven't been migrated yet
+const database = defaultDatabase;
 
 // LID mapping cache
 const lidMappingCache = new Map();
@@ -394,7 +399,7 @@ const handleMessage = async (sock, msg) => {
     const groupMetadata = isGroup ? await getGroupMetadata(sock, from) : null;
     
     if (isGroup) {
-      const groupSettings = database.getGroupSettings(from);
+      const groupSettings = getDb(sock).getGroupSettings(from);
       if (groupSettings.antigroupmention) {
         try {
           await handleAntigroupmention(sock, msg, groupMetadata);
@@ -425,9 +430,9 @@ const handleMessage = async (sock, msg) => {
             isOwner: isOwner(sender),
             isAdmin: senderIsAdmin,
             isBotAdmin: botIsAdmin,
-            isMod: isMod(sender),
+            isMod: isMod(sock, sender),
             config,
-            database,
+            database: getDb(sock),
             utils: {
               getMessageContent,
               normalizeJidWithLid,
@@ -458,7 +463,8 @@ const handleMessage = async (sock, msg) => {
             isOwner: isOwner(sender),
             isAdmin: await isAdmin(sock, sender, from, groupMetadata),
             isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
-            isMod: isMod(sender),
+            isMod: isMod(sock, sender),
+            database: getDb(sock),
             reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
             react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
           });
@@ -475,7 +481,8 @@ const handleMessage = async (sock, msg) => {
             isOwner: isOwner(sender),
             isAdmin: await isAdmin(sock, sender, from, groupMetadata),
             isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
-            isMod: isMod(sender),
+            isMod: isMod(sock, sender),
+            database: getDb(sock),
             reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
             react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
           });
@@ -492,7 +499,8 @@ const handleMessage = async (sock, msg) => {
             isOwner: isOwner(sender),
             isAdmin: await isAdmin(sock, sender, from, groupMetadata),
             isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
-            isMod: isMod(sender),
+            isMod: isMod(sock, sender),
+            database: getDb(sock),
             reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
             react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
           });
@@ -525,9 +533,9 @@ const handleMessage = async (sock, msg) => {
               isOwner: isOwner(sender),
               isAdmin: await isAdmin(sock, sender, from, groupMetadata),
               isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
-              isMod: isMod(sender),
+              isMod: isMod(sock, sender),
               config,
-              database,
+              database: getDb(sock),
               utils: {
                 getMessageContent,
                 normalizeJidWithLid,
@@ -559,7 +567,7 @@ const handleMessage = async (sock, msg) => {
     body = (body || '').trim();
     
     if (isGroup) {
-      const groupSettings = database.getGroupSettings(from);
+      const groupSettings = getDb(sock).getGroupSettings(from);
       if (groupSettings.antiall) {
         const senderIsAdmin = await isAdmin(sock, sender, from, groupMetadata);
         const senderIsOwner = isOwner(sender);
@@ -653,7 +661,7 @@ const handleMessage = async (sock, msg) => {
     }
     
     if (isGroup) {
-      const groupSettings = database.getGroupSettings(from);
+      const groupSettings = getDb(sock).getGroupSettings(from);
       if (groupSettings.antigroupmention) {
         try {
           await handleAntigroupmention(sock, msg, groupMetadata);
@@ -664,7 +672,7 @@ const handleMessage = async (sock, msg) => {
     }
     
     if (isGroup) {
-      const groupSettings = database.getGroupSettings(from);
+      const groupSettings = getDb(sock).getGroupSettings(from);
       if (groupSettings.autosticker) {
         const mediaMessage = content?.imageMessage || content?.videoMessage;
         if (mediaMessage && !body.startsWith(config.prefix)) {
@@ -679,7 +687,8 @@ const handleMessage = async (sock, msg) => {
                 isOwner: isOwner(sender),
                 isAdmin: await isAdmin(sock, sender, from, groupMetadata),
                 isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
-                isMod: isMod(sender),
+                isMod: isMod(sock, sender),
+                database: getDb(sock),
                 reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
                 react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
               });
@@ -708,7 +717,7 @@ const handleMessage = async (sock, msg) => {
       return sock.sendMessage(from, { text: config.messages.ownerOnly }, { quoted: msg });
     }
     
-    if (command.modOnly && !isMod(sender) && !isOwner(sender)) {
+    if (command.modOnly && !isMod(sock, sender) && !isOwner(sender)) {
       return sock.sendMessage(from, { text: '🔒 This command is only for moderators!' }, { quoted: msg });
     }
     
@@ -746,9 +755,9 @@ const handleMessage = async (sock, msg) => {
       isOwner: isOwner(sender),
       isAdmin: senderIsAdmin,
       isBotAdmin: botIsAdmin,
-      isMod: isMod(sender),
+      isMod: isMod(sock, sender),
       config,
-      database,
+      database: getDb(sock),
       utils: {
         getMessageContent,
         normalizeJidWithLid,
@@ -788,7 +797,7 @@ const handleGroupUpdate = async (sock, update) => {
       return;
     }
     
-    const groupSettings = database.getGroupSettings(id);
+    const groupSettings = getDb(sock).getGroupSettings(id);
 
     const groupMetadata = await getGroupMetadata(sock, id);
 
@@ -799,13 +808,13 @@ const handleGroupUpdate = async (sock, update) => {
           await command.handleGroupUpdate(sock, update, {
             from: id,
             isGroup: true,
-            groupMetadata: groupMetadata || null,
-            config,
-            database,
-            reply: (text) => sock.sendMessage(id, { text })
-          });
+              groupMetadata: groupMetadata || null,
+              config,
+              database: getDb(sock),
+              reply: (text) => sock.sendMessage(id, { text })
+            });
+          }
         }
-      }
     } catch {}
 
     if (!groupSettings.welcome && !groupSettings.goodbye) return;
@@ -1052,7 +1061,7 @@ const handleAntilink = async (sock, msg, groupMetadata) => {
     const from = msg.key.remoteJid;
     const sender = msg.key.participant || msg.key.remoteJid;
     
-    const groupSettings = database.getGroupSettings(from);
+    const groupSettings = getDb(sock).getGroupSettings(from);
     if (!groupSettings.antilink) return;
     
     const body = msg.message?.conversation || 
@@ -1092,7 +1101,7 @@ const handleAntilink = async (sock, msg, groupMetadata) => {
         } catch {}
 
         try {
-          const warnData = database.addWarning(from, sender, 'Anti-link');
+          const warnData = getDb(sock).addWarning(from, sender, 'Anti-link');
           const maxWarnings = config.maxWarnings || 3;
           if (warnData.count >= maxWarnings && botIsAdmin) {
             await sock.groupParticipantsUpdate(from, [sender], 'remove');
@@ -1136,7 +1145,7 @@ const handleAntigroupmention = async (sock, msg, groupMetadata) => {
     const from = msg.key.remoteJid;
     const sender = msg.key.participant || msg.key.remoteJid;
     
-    const groupSettings = database.getGroupSettings(from);
+    const groupSettings = getDb(sock).getGroupSettings(from);
     
     if (!groupSettings.antigroupmention) return;
     
