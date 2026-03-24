@@ -1,11 +1,11 @@
 /**
  * Pair Command for ProBoy‑MD
  * Generates a WhatsApp pairing code using an external API.
- * Includes a copy button for easy code copying.
+ * Includes wait message, retry logic, and a copy button.
  */
 
 const axios = require('axios');
-const { sendInteractiveMessage } = require('gifted-btns'); // Ensure gifted-btns is installed
+const { sendInteractiveMessage } = require('gifted-btns');
 
 module.exports = {
   name: 'pair',
@@ -13,77 +13,93 @@ module.exports = {
   category: 'utility',
   description: 'Generate a WhatsApp pairing code for a given phone number',
   usage: '.pair <phone_number>',
-  ownerOnly: false, // Everyone can use this
+  ownerOnly: false,
 
   async execute(sock, msg, args, extra) {
+    const { reply, react, from } = extra;
+
     try {
-      // Check if number is provided
+      // Validate input
       const number = args[0];
       if (!number) {
-        return extra.reply(`❌ Please provide a phone number.\n*Usage:* ${this.usage}`);
+        return reply(`❌ Please provide a phone number.\n*Usage:* ${this.usage}`);
       }
 
-      // Basic validation – ensure it's numeric (allow + or just digits)
       const cleaned = number.replace(/[^0-9]/g, '');
       if (cleaned.length < 10) {
-        return extra.reply('❌ Invalid phone number. Please provide a valid number with country code (e.g., 923001234567).');
+        return reply('❌ Invalid phone number. Please provide a valid number with country code (e.g., 923001234567).');
       }
 
-      // React with hourglass and optionally send a "please wait" message
-      await extra.react('⏳');
-      // Optional: send a temporary info message (but we'll rely on reaction)
-      // If you want a message, uncomment the next line
-      // await extra.reply('⏳ Generating your pair code, please wait... (Render may take a few seconds to start)');
+      await react('⏳');
+
+      // Send a temporary "waiting" message that we'll edit later
+      const waitMsg = await sock.sendMessage(from, {
+        text: '⏳ Generating your pair code...\n_This may take up to 30 seconds (free Render server startup)._'
+      }, { quoted: msg });
+      const waitKey = waitMsg.key;
 
       // Build API URL
       const apiUrl = `https://proboy-pair.onrender.com/pair?number=${encodeURIComponent(cleaned)}`;
 
-      // Make request with a longer timeout (Render free tier can be slow to start)
-      const response = await axios.get(apiUrl, { timeout: 30000 }); // 30 seconds
+      // Attempt the request with retry (2 attempts, longer timeout)
+      let pairCode = null;
+      let lastError = null;
 
-      // Check response structure
-      if (response.status !== 200 || !response.data || !response.data.code) {
-        throw new Error('Invalid response from pairing server');
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+          const response = await axios.get(apiUrl, { timeout: 45000 }); // 45 seconds
+          if (response.status === 200 && response.data && response.data.code) {
+            pairCode = response.data.code;
+            break;
+          }
+          throw new Error('Invalid API response');
+        } catch (err) {
+          lastError = err;
+          if (attempt === 2) break;
+          // Wait 3 seconds before retry
+          await new Promise(r => setTimeout(r, 3000));
+          await sock.sendMessage(from, { text: '🔄 Retrying...', edit: waitKey });
+        }
       }
 
-      const pairCode = response.data.code; // e.g., "2T4T-DJ8N"
+      if (!pairCode) {
+        throw new Error(lastError?.message || 'No valid code received');
+      }
 
-      // Prepare the interactive button for copying the code
-      const buttons = [
-        {
-          name: 'cta_copy',
-          buttonParamsJson: JSON.stringify({
-            display_text: '📋 Copy Code',
-            copy_code: pairCode
-          })
-        }
-      ];
+      // Edit the waiting message to show success
+      await sock.sendMessage(from, {
+        text: '✅ Code generated successfully!',
+        edit: waitKey
+      });
 
-      // Send the message with the code and the copy button
-      await sendInteractiveMessage(sock, extra.from, {
+      // Send interactive message with copy button
+      await sendInteractiveMessage(sock, from, {
         text: `✅ *Pair Code Generated Successfully!*\n\nYour pair code is:\n\n\`${pairCode}\`\n\nTap the button below to copy it.`,
         footer: 'ProBoy‑MD',
-        interactiveButtons: buttons
+        interactiveButtons: [
+          {
+            name: 'cta_copy',
+            buttonParamsJson: JSON.stringify({
+              display_text: '📋 Copy Code',
+              copy_code: pairCode
+            })
+          }
+        ]
       }, { quoted: msg });
 
-      await extra.react('✅'); // Success reaction
+      await react('✅');
     } catch (error) {
       console.error('Pair command error:', error);
       let errorMsg = '❌ Failed to generate pair code.';
-      if (error.response) {
-        // API responded with error
-        if (error.response.status === 400) {
-          errorMsg = '❌ Invalid number format or API error.';
-        } else {
-          errorMsg = `❌ Server error: ${error.response.status}`;
-        }
-      } else if (error.request) {
-        errorMsg = '❌ No response from pairing server. It may be down or still starting up.';
-      } else {
+      if (error.code === 'ECONNABORTED') {
+        errorMsg = '❌ Request timed out. The server may be starting up – please try again in a minute.';
+      } else if (error.response) {
+        errorMsg = `❌ Server error: ${error.response.status}`;
+      } else if (error.message) {
         errorMsg = `❌ ${error.message}`;
       }
-      await extra.reply(errorMsg);
-      await extra.react('❌');
+      await reply(errorMsg);
+      await react('❌');
     }
   }
 };
