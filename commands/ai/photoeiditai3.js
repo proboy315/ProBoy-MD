@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 const { uploadToCatbox } = require('../../utils/catbox');
 
 const MODELS = ['ezremove_4.0', 'ezremove_4.0_pro', 'ezremove_3.0', 'ezremove_3.0_pro', 'nano_banana', 'nano_banana_pro', 'seedream_4', 'seedream_45'];
@@ -43,7 +44,9 @@ module.exports = {
       const imageUrl = await uploadToCatbox(buffer, 'image.jpg');
       if (!imageUrl) throw new Error('Upload failed');
 
-      const apiUrl = `https://api.giftedtech.co.ke/api/tools/photoeditorv3?apikey=gifted&url=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(model)}&resolution=${encodeURIComponent(resolution)}`;
+      const baseUrl = config.apis?.giftedtech?.baseUrl || 'https://api.giftedtech.co.ke/api';
+      const apikey = config.apis?.giftedtech?.apiKey || 'gifted';
+      const apiUrl = `${baseUrl}/tools/photoeditorv3?apikey=${encodeURIComponent(apikey)}&url=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt)}&model=${encodeURIComponent(model)}&resolution=${encodeURIComponent(resolution)}`;
       const res = await axios.get(apiUrl);
       const resultUrl = res.data?.result?.output;
 

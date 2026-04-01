@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 const { uploadToCatbox } = require('../../utils/catbox');
 
 module.exports = {
@@ -25,7 +26,9 @@ module.exports = {
       const imageUrl = await uploadToCatbox(buffer, 'image.jpg');
       if (!imageUrl) throw new Error('Upload failed');
 
-      const apiUrl = `https://api.giftedtech.co.ke/api/tools/photoeditorv2?apikey=gifted&url=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt)}&model=gpt-image-1`;
+      const baseUrl = config.apis?.giftedtech?.baseUrl || 'https://api.giftedtech.co.ke/api';
+      const apikey = config.apis?.giftedtech?.apiKey || 'gifted';
+      const apiUrl = `${baseUrl}/tools/photoeditorv2?apikey=${encodeURIComponent(apikey)}&url=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt)}&model=gpt-image-1`;
       const res = await axios.get(apiUrl, { responseType: 'arraybuffer', timeout: 90000 });
       const imgBuffer = Buffer.from(res.data);
 

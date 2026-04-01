@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'blackbox',
@@ -15,7 +16,11 @@ module.exports = {
     try {
       await react('👾');
       const res = await axios.get(
-        `https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(query)}`,
+        (() => {
+          const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+          const apikey = config.apis?.princetech?.apiKey || 'prince';
+          return `${baseUrl}/ai/ai?apikey=${encodeURIComponent(apikey)}&q=${encodeURIComponent(query)}`;
+        })(),
         { timeout: 30000 }
       );
       const result = res.data?.result;

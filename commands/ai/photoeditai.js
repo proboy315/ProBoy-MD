@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 const { uploadToCatbox } = require('../../utils/catbox');
 
 module.exports = {
@@ -27,7 +28,9 @@ module.exports = {
       if (!imageUrl) throw new Error('Upload failed');
 
       // Call API
-      const apiUrl = `https://api.giftedtech.co.ke/api/tools/photoeditor?apikey=gifted&url=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt)}`;
+      const baseUrl = config.apis?.giftedtech?.baseUrl || 'https://api.giftedtech.co.ke/api';
+      const apikey = config.apis?.giftedtech?.apiKey || 'gifted';
+      const apiUrl = `${baseUrl}/tools/photoeditor?apikey=${encodeURIComponent(apikey)}&url=${encodeURIComponent(imageUrl)}&prompt=${encodeURIComponent(prompt)}`;
       const res = await axios.get(apiUrl);
       const resultUrl = res.data?.result;
 

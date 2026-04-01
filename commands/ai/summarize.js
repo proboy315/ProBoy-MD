@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'summarize',
@@ -16,7 +17,9 @@ module.exports = {
       await react('📝');
       
       const aiPrompt = `Summarize the following text concisely: "${text}"`;
-      const res = await axios.get(`https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(aiPrompt)}`);
+      const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+      const apikey = config.apis?.princetech?.apiKey || 'prince';
+      const res = await axios.get(`${baseUrl}/ai/ai`, { params: { apikey, q: aiPrompt }, timeout: 30000 });
       const summary = res.data?.result;
 
       if (!summary) return reply('❌ Summarization failed.');

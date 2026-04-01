@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 const { uploadToCatbox } = require('../../utils/catbox');
 
 module.exports = {
@@ -25,7 +26,9 @@ module.exports = {
       await react('🎚️');
       const statusMsg = await sock.sendMessage(from, { text: '⏳ Separating tracks (v2)...' }, { quoted: msg });
 
-      const apiUrl = `https://api.giftedtech.co.ke/api/tools/vocalremoverv2?apikey=gifted&url=${encodeURIComponent(audioUrl)}`;
+      const baseUrl = config.apis?.giftedtech?.baseUrl || 'https://api.giftedtech.co.ke/api';
+      const apikey = config.apis?.giftedtech?.apiKey || 'gifted';
+      const apiUrl = `${baseUrl}/tools/vocalremoverv2?apikey=${encodeURIComponent(apikey)}&url=${encodeURIComponent(audioUrl)}`;
       const res = await axios.get(apiUrl);
       const { title, original, vocals, instrumental } = res.data?.result || {};
 

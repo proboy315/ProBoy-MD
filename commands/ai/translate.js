@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'translate',
@@ -26,7 +27,9 @@ module.exports = {
       await react('🌍');
       
       const aiPrompt = `Translate the following text to ${target}: "${text}". Only provide the translation, no explanation.`;
-      const res = await axios.get(`https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(aiPrompt)}`);
+      const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+      const apikey = config.apis?.princetech?.apiKey || 'prince';
+      const res = await axios.get(`${baseUrl}/ai/ai`, { params: { apikey, q: aiPrompt }, timeout: 30000 });
       const translation = res.data?.result;
 
       if (!translation) return reply('❌ Translation failed.');

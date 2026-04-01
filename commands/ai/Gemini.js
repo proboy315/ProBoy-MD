@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'gemini',
@@ -17,11 +18,14 @@ module.exports = {
       
       let result;
       try {
-        const res = await axios.get(`https://ymd-ai.onrender.com/api/gemini?q=${encodeURIComponent(query)}`);
+        const baseUrl = config.apis?.geminiProxy?.baseUrl || 'https://ymd-ai.onrender.com';
+        const res = await axios.get(`${baseUrl}/api/gemini`, { params: { q: query }, timeout: 30000 });
         result = res.data?.data;
       } catch (e) {
         // Fallback to Prince API
-        const res = await axios.get(`https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(query)}`);
+        const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+        const apikey = config.apis?.princetech?.apiKey || 'prince';
+        const res = await axios.get(`${baseUrl}/ai/ai`, { params: { apikey, q: query }, timeout: 30000 });
         result = res.data?.result;
       }
 

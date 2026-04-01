@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 const SUPPORTED_LANGS = ['javascript','typescript','python','swift','ruby','csharp','go','rust','php','matlab','r','java','c','cpp'];
 
@@ -34,12 +35,15 @@ module.exports = {
       
       let code;
       try {
-        const res = await axios.get(`https://api.dreaded.site/api/aicode?prompt=${encodeURIComponent(prompt)}&language=${encodeURIComponent(lang)}`);
+        const baseUrl = config.apis?.dreaded?.baseUrl || 'https://api.dreaded.site/api';
+        const res = await axios.get(`${baseUrl}/aicode`, { params: { prompt, language: lang }, timeout: 30000 });
         code = res.data?.result?.prompt?.code;
       } catch (e) {
         // Fallback to Prince API
         const aiPrompt = `Write ${lang} code for: ${prompt}. Only provide the code, no explanation.`;
-        const res = await axios.get(`https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(aiPrompt)}`);
+        const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+        const apikey = config.apis?.princetech?.apiKey || 'prince';
+        const res = await axios.get(`${baseUrl}/ai/ai`, { params: { apikey, q: aiPrompt }, timeout: 30000 });
         code = res.data?.result;
       }
 

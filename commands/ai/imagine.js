@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'imagine',
@@ -16,7 +17,8 @@ module.exports = {
       await react('🎨');
       await reply('⏳ Generating image...');
 
-      const res = await axios.get(`https://api.dreaded.site/api/imagine?text=${encodeURIComponent(prompt)}`);
+      const baseUrl = config.apis?.dreaded?.baseUrl || 'https://api.dreaded.site/api';
+      const res = await axios.get(`${baseUrl}/imagine`, { params: { text: prompt }, timeout: 30000 });
       const imageUrl = res.data?.result;
 
       if (!imageUrl) return reply('❌ Image generation failed.');

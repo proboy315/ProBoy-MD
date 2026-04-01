@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'chatgpt',
@@ -17,11 +18,14 @@ module.exports = {
       
       let result;
       try {
-        const res = await axios.get(`https://api.dreaded.site/api/chatgpt?text=${encodeURIComponent(query)}`);
+        const baseUrl = config.apis?.dreaded?.baseUrl || 'https://api.dreaded.site/api';
+        const res = await axios.get(`${baseUrl}/chatgpt`, { params: { text: query }, timeout: 30000 });
         result = res.data?.result?.prompt;
       } catch (e) {
         // Fallback to Prince API
-        const res = await axios.get(`https://api.princetechn.com/api/ai/ai?apikey=prince&q=${encodeURIComponent(query)}`);
+        const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+        const apikey = config.apis?.princetech?.apiKey || 'prince';
+        const res = await axios.get(`${baseUrl}/ai/ai`, { params: { apikey, q: query }, timeout: 30000 });
         result = res.data?.result;
       }
 

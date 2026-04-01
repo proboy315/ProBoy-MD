@@ -1,6 +1,7 @@
 
 
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'ai',
@@ -22,9 +23,10 @@ module.exports = {
       await extra.react('⏳');
 
       // Build the API URL
-      const apiUrl = 'https://api.giftedtech.co.ke/api/ai/gpt4o';
+      const baseUrl = config.apis?.giftedtech?.baseUrl || 'https://api.giftedtech.co.ke/api';
+      const apiUrl = `${baseUrl}/ai/gpt4o`;
       const params = {
-        apikey: 'gifted',
+        apikey: config.apis?.giftedtech?.apiKey || 'gifted',
         q: question
       };
 
