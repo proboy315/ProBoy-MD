@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../../config');
 const { loadCommands } = require('../../utils/commandLoader');
+const ui = require('../../utils/ui');
 
 module.exports = {
   name: 'list',
@@ -33,14 +34,11 @@ module.exports = {
       const ownerNames = Array.isArray(config.ownerName) ? config.ownerName : [config.ownerName];
       const displayOwner = ownerNames[0] || config.ownerName || 'Bot Owner';
       
-      let menuText = `╭═══〘 *${config.botName}* 〙═══⊷❍\n\n`;
-      menuText += `┃✯╭──────────────\n`;
-      menuText += `┃✯│ _*\`Owner\`*_ : ${displayOwner}\n`; 
-      menuText += `┃✯│ _*\`User\`*_ : @@${extra.sender.split('@')[0]}\n`;
-      menuText += `┃✯│ _*\`Prefix\`*_ : ${config.prefix}\n`;
-      menuText += `┃✯│ _*\`Total Commands\`*_ : ${commands.size}\n`;
-      menuText += `┃✯╰───────────────\n`;
-      menuText += `╰═════════════════⊷\n\n`;
+      let menuText = `${ui.headerLine('Commands')}\n\n`;
+      menuText += `👑 Owner: ${displayOwner}\n`;
+      menuText += `👤 User: @${extra.sender.split('@')[0]}\n`;
+      menuText += `⚡ Prefix: ${config.prefix}\n`;
+      menuText += `🧩 Total Commands: ${commands.size}\n\n`;
 
       // Sort categories and build each section
       const sortedCats = Object.keys(categories).sort();
@@ -57,7 +55,7 @@ module.exports = {
       // Footer with help tip and social links (as text, optional)
       menuText += `╰━━━━━━━━━━━━━━━━━\n\n`;
       menuText += `💡 Type ${config.prefix}help <command> for more info\n`;
-      menuText += `🌟 Bot Version: 1.0.0\n\n`;
+      menuText += `🌟 Bot Version: ${config.version || '1.0.0'}\n\n`;
       menuText += `📌 *Follow us:*\n`;
       menuText += `🔗 TikTok: ${config.social?.tiktok || 'https://www.tiktok.com/@itx_proboy/'}\n`;
       menuText += `🔗 GitHub: ${config.social?.github || 'https://github.com/proboy315/ProBoy-MD/'}\n`;

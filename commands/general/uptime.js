@@ -52,7 +52,7 @@ module.exports = {
       
 // Get bot info
 const botName = config.botName || 'Bot';
-const botVersion = 'V1.0.1';
+const botVersion = config.version || '1.0.0';
       
       // Build response message
       let message = `╭━━『 *Bot Uptime* 』━━╮\n\n`;
@@ -69,4 +69,3 @@ const botVersion = 'V1.0.1';
     }
   }
 };
-

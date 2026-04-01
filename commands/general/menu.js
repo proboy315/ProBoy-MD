@@ -7,6 +7,7 @@
 const config = require('../../config');
 
 const { loadCommands } = require('../../utils/commandLoader');
+const ui = require('../../utils/ui');
 
 module.exports = {
 
@@ -58,21 +59,11 @@ module.exports = {
 
       // menu configurtion from proboy
 
-      let menuText = `╭═══〘 *${config.botName}* 〙═══⊷❍\n\n`;
-
-      menuText += `┃✯╭──────────────\n`;
-
-      menuText += `┃✯│ _*\`Owner\`*_ : ${displayOwner}\n`; 
-
-      menuText += `┃✯│ _*\`User\`*_ : @@${extra.sender.split('@')[0]}\n`;
-
-      menuText += `┃✯│ _*\`Prefix\`*_ : ${config.prefix}\n`;
-
-      menuText += `┃✯│ _*\`Available Commands\`*_ : ${commands.size}\n`;
-
-      menuText += `┃✯╰───────────────\n`;
-
-      menuText += `╰═════════════════⊷\n`;
+      let menuText = `${ui.headerLine('Menu')}\n\n`;
+      menuText += `👑 Owner: ${displayOwner}\n`;
+      menuText += `👤 User: @${extra.sender.split('@')[0]}\n`;
+      menuText += `⚡ Prefix: ${config.prefix}\n`;
+      menuText += `🧩 Commands: ${commands.size}\n\n`;
 
      
 
@@ -282,7 +273,7 @@ menuText += `\n`;
 
       menuText += `💡 Type ${config.prefix}help <command> for more info\n`;
 
-      menuText += `🌟 Bot Version: 1.0.0\n`;
+      menuText += `🌟 Bot Version: ${config.version || '1.0.0'}\n`;
 
       
 
