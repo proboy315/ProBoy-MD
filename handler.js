@@ -901,7 +901,7 @@ const handleGroupUpdate = async (sock, update) => {
           try {
             profilePicUrl = await sock.profilePictureUrl(participantJid, 'image');
           } catch (ppError) {
-            profilePicUrl = 'https://img.pyrocdn.com/dbKUgahg.png';
+            profilePicUrl = config.apis?.defaultAssets?.fallbackProfilePicUrl || 'https://img.pyrocdn.com/dbKUgahg.png';
           }
           
           const groupName = groupMetadata.subject || 'the group';
@@ -916,7 +916,8 @@ const handleGroupUpdate = async (sock, update) => {
           
           const welcomeMsg = `╭╼━≪•𝙽𝙴𝚆 𝙼𝙴𝙼𝙱𝙴𝚁•≫━╾╮\n┃𝚆𝙴𝙻𝙲𝙾𝙼𝙴: @${displayName} 👋\n┃Member count: #${groupMetadata.participants.length}\n┃𝚃𝙸𝙼𝙴: ${timeString}⏰\n╰━━━━━━━━━━━━━━━╯\n\n*@${displayName}* Welcome to *${groupName}*! 🎉\n*Group 𝙳𝙴𝚂𝙲𝚁𝙸𝙿𝚃𝙸𝙾𝙽*\n${groupDesc}\n\n> *ᴘᴏᴡᴇʀᴇᴅ ʙʏ ${config.botName}*`;
           
-          const apiUrl = `https://api.some-random-api.com/welcome/img/7/gaming4?type=join&textcolor=white&username=${encodeURIComponent(displayName)}&guildName=${encodeURIComponent(groupName)}&memberCount=${groupMetadata.participants.length}&avatar=${encodeURIComponent(profilePicUrl)}`;
+          const baseUrl = config.apis?.someRandomApi?.baseUrl || 'https://api.some-random-api.com';
+          const apiUrl = `${baseUrl}/welcome/img/7/gaming4?type=join&textcolor=white&username=${encodeURIComponent(displayName)}&guildName=${encodeURIComponent(groupName)}&memberCount=${groupMetadata.participants.length}&avatar=${encodeURIComponent(profilePicUrl)}`;
           
           const imageResponse = await axios.get(apiUrl, { responseType: 'arraybuffer' });
           const imageBuffer = Buffer.from(imageResponse.data);
@@ -1003,7 +1004,7 @@ const handleGroupUpdate = async (sock, update) => {
           try {
             profilePicUrl = await sock.profilePictureUrl(participantJid, 'image');
           } catch (ppError) {
-            profilePicUrl = 'https://img.pyrocdn.com/dbKUgahg.png';
+            profilePicUrl = config.apis?.defaultAssets?.fallbackProfilePicUrl || 'https://img.pyrocdn.com/dbKUgahg.png';
           }
           
           const groupName = groupMetadata.subject || 'the group';
@@ -1018,7 +1019,8 @@ const handleGroupUpdate = async (sock, update) => {
           
           const goodbyeMsg = `Goodbye @${displayName} 👋 We will never miss you!`;
           
-          const apiUrl = `https://api.some-random-api.com/welcome/img/7/gaming4?type=leave&textcolor=white&username=${encodeURIComponent(displayName)}&guildName=${encodeURIComponent(groupName)}&memberCount=${groupMetadata.participants.length}&avatar=${encodeURIComponent(profilePicUrl)}`;
+          const baseUrl = config.apis?.someRandomApi?.baseUrl || 'https://api.some-random-api.com';
+          const apiUrl = `${baseUrl}/welcome/img/7/gaming4?type=leave&textcolor=white&username=${encodeURIComponent(displayName)}&guildName=${encodeURIComponent(groupName)}&memberCount=${groupMetadata.participants.length}&avatar=${encodeURIComponent(profilePicUrl)}`;
           
           const imageResponse = await axios.get(apiUrl, { responseType: 'arraybuffer' });
           const imageBuffer = Buffer.from(imageResponse.data);
