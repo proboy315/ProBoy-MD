@@ -3,6 +3,7 @@ const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
 const { tmpdir } = require('os');
+const config = require('../config');
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -22,7 +23,8 @@ async function uploadToCatbox(buffer, originalFilename = 'file') {
     form.append('reqtype', 'fileupload');
     form.append('fileToUpload', fs.createReadStream(tempFile), name);
 
-    const response = await axios.post('https://catbox.moe/user/api.php', form, {
+    const uploadUrl = config.apis?.catbox?.uploadUrl || 'https://catbox.moe/user/api.php';
+    const response = await axios.post(uploadUrl, form, {
       headers: {
         ...form.getHeaders(),
         'User-Agent': USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
@@ -39,4 +41,3 @@ async function uploadToCatbox(buffer, originalFilename = 'file') {
 }
 
 module.exports = { uploadToCatbox };
-

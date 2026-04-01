@@ -3,6 +3,12 @@
  */
 
 const axios = require('axios');
+const config = require('../config');
+
+const getApi = (path) => {
+  const root = config.apis || {};
+  return root[path] || {};
+};
 
 const api = axios.create({
   timeout: 30000,
@@ -16,7 +22,8 @@ const APIs = {
   // Image Generation
   generateImage: async (prompt) => {
     try {
-      const response = await api.get(`https://api.siputzx.my.id/api/ai/stablediffusion`, {
+      const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+      const response = await api.get(`${baseUrl}/api/ai/stablediffusion`, {
         params: { prompt }
       });
       return response.data;
@@ -28,7 +35,12 @@ const APIs = {
   // AI Chat - Shizo API
   chatAI: async (text) => {
     try {
-      const response = await api.get(`https://api.shizo.top/ai/gpt?apikey=shizo&query=${encodeURIComponent(text)}`);
+      const shizo = getApi('shizo');
+      const baseUrl = shizo.baseUrl || 'https://api.shizo.top';
+      const apikey = shizo.apiKey || 'shizo';
+      const response = await api.get(`${baseUrl}/ai/gpt`, {
+        params: { apikey, query: text }
+      });
       if (response.data && response.data.msg) {
         return { msg: response.data.msg };
       }
@@ -41,7 +53,8 @@ const APIs = {
   // YouTube Download
   ytDownload: async (url, type = 'audio') => {
     try {
-      const response = await api.get(`https://api.siputzx.my.id/api/d/ytmp3`, {
+      const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+      const response = await api.get(`${baseUrl}/api/d/ytmp3`, {
         params: { url }
       });
       return response.data;
@@ -53,7 +66,8 @@ const APIs = {
   // Instagram Download
   igDownload: async (url) => {
     try {
-      const response = await api.get(`https://api.siputzx.my.id/api/d/igdl`, {
+      const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+      const response = await api.get(`${baseUrl}/api/d/igdl`, {
         params: { url }
       });
       return response.data;
@@ -65,7 +79,8 @@ const APIs = {
   // TikTok Download
   tiktokDownload: async (url) => {
     try {
-      const response = await api.get(`https://api.siputzx.my.id/api/d/tiktok`, {
+      const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+      const response = await api.get(`${baseUrl}/api/d/tiktok`, {
         params: { url }
       });
       return response.data;
@@ -77,7 +92,8 @@ const APIs = {
   // Translate
   translate: async (text, to = 'en') => {
     try {
-      const response = await api.get(`https://api.siputzx.my.id/api/tools/translate`, {
+      const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+      const response = await api.get(`${baseUrl}/api/tools/translate`, {
         params: { text, to }
       });
       return response.data;
@@ -89,7 +105,8 @@ const APIs = {
   // Random Meme
   getMeme: async () => {
     try {
-      const response = await api.get('https://meme-api.com/gimme');
+      const apiUrl = getApi('memeApi').apiUrl || 'https://meme-api.com/gimme';
+      const response = await api.get(apiUrl);
       return response.data;
     } catch (error) {
       throw new Error('Failed to fetch meme');
@@ -99,7 +116,8 @@ const APIs = {
   // Random Quote
   getQuote: async () => {
     try {
-      const response = await api.get('https://api.quotable.io/random');
+      const apiUrl = getApi('quotable').apiUrl || 'https://api.quotable.io/random';
+      const response = await api.get(apiUrl);
       return response.data;
     } catch (error) {
       throw new Error('Failed to fetch quote');
@@ -109,7 +127,8 @@ const APIs = {
   // Random Joke
   getJoke: async () => {
     try {
-      const response = await api.get('https://official-joke-api.appspot.com/random_joke');
+      const apiUrl = getApi('jokeApi').apiUrl || 'https://official-joke-api.appspot.com/random_joke';
+      const response = await api.get(apiUrl);
       return response.data;
     } catch (error) {
       throw new Error('Failed to fetch joke');
@@ -119,7 +138,8 @@ const APIs = {
   // Weather
   getWeather: async (city) => {
     try {
-      const response = await api.get(`https://api.siputzx.my.id/api/tools/weather`, {
+      const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+      const response = await api.get(`${baseUrl}/api/tools/weather`, {
         params: { city }
       });
       return response.data;
@@ -131,7 +151,8 @@ const APIs = {
   // Shorten URL
   shortenUrl: async (url) => {
     try {
-      const response = await api.get(`https://tinyurl.com/api-create.php`, {
+      const apiUrl = getApi('tinyurl').apiUrl || 'https://tinyurl.com/api-create.php';
+      const response = await api.get(apiUrl, {
         params: { url }
       });
       return response.data;
@@ -143,7 +164,8 @@ const APIs = {
   // Wikipedia Search
   wikiSearch: async (query) => {
     try {
-      const response = await api.get(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query)}`);
+      const baseUrl = getApi('wikipedia').summaryBaseUrl || 'https://en.wikipedia.org/api/rest_v1/page/summary';
+      const response = await api.get(`${baseUrl}/${encodeURIComponent(query)}`);
       return response.data;
     } catch (error) {
       throw new Error('Wikipedia search failed');
@@ -175,7 +197,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://izumiiiiiiii.dpdns.org/downloader/youtube?url=${encodeURIComponent(youtubeUrl)}&format=mp3`;
+    const baseUrl = getApi('ytdlFallbacks').izumiBaseUrl || 'https://izumiiiiiiii.dpdns.org';
+    const apiUrl = `${baseUrl}/downloader/youtube?url=${encodeURIComponent(youtubeUrl)}&format=mp3`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.result?.download) return res.data.result;
     throw new Error('Izumi youtube?url returned no download');
@@ -205,7 +228,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://izumiiiiiiii.dpdns.org/downloader/youtube-play?query=${encodeURIComponent(query)}`;
+    const baseUrl = getApi('ytdlFallbacks').izumiBaseUrl || 'https://izumiiiiiiii.dpdns.org';
+    const apiUrl = `${baseUrl}/downloader/youtube-play?query=${encodeURIComponent(query)}`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.result?.download) return res.data.result;
     throw new Error('Izumi youtube-play returned no download');
@@ -235,7 +259,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://api.yupra.my.id/api/downloader/ytmp3?url=${encodeURIComponent(youtubeUrl)}`;
+    const baseUrl = getApi('ytdlFallbacks').yupraBaseUrl || 'https://api.yupra.my.id';
+    const apiUrl = `${baseUrl}/api/downloader/ytmp3?url=${encodeURIComponent(youtubeUrl)}`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.success && res?.data?.data?.download_url) {
       return {
@@ -271,7 +296,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://okatsu-rolezapiiz.vercel.app/downloader/ytmp3?url=${encodeURIComponent(youtubeUrl)}`;
+    const baseUrl = getApi('ytdlFallbacks').okatsuBaseUrl || 'https://okatsu-rolezapiiz.vercel.app';
+    const apiUrl = `${baseUrl}/downloader/ytmp3?url=${encodeURIComponent(youtubeUrl)}`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.dl) {
       return {
@@ -307,7 +333,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://eliteprotech-apis.zone.id/ytdown?url=${encodeURIComponent(youtubeUrl)}&format=mp3`;
+    const baseUrl = getApi('ytdlFallbacks').eliteprotechBaseUrl || 'https://eliteprotech-apis.zone.id';
+    const apiUrl = `${baseUrl}/ytdown?url=${encodeURIComponent(youtubeUrl)}&format=mp3`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.success && res?.data?.downloadURL) {
       return {
@@ -342,7 +369,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://eliteprotech-apis.zone.id/ytdown?url=${encodeURIComponent(youtubeUrl)}&format=mp4`;
+    const baseUrl = getApi('ytdlFallbacks').eliteprotechBaseUrl || 'https://eliteprotech-apis.zone.id';
+    const apiUrl = `${baseUrl}/ytdown?url=${encodeURIComponent(youtubeUrl)}&format=mp4`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.success && res?.data?.downloadURL) {
       return {
@@ -378,7 +406,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://api.yupra.my.id/api/downloader/ytmp4?url=${encodeURIComponent(youtubeUrl)}`;
+    const baseUrl = getApi('ytdlFallbacks').yupraBaseUrl || 'https://api.yupra.my.id';
+    const apiUrl = `${baseUrl}/api/downloader/ytmp4?url=${encodeURIComponent(youtubeUrl)}`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.success && res?.data?.data?.download_url) {
       return {
@@ -414,7 +443,8 @@ const APIs = {
       throw lastError;
     };
     
-    const apiUrl = `https://okatsu-rolezapiiz.vercel.app/downloader/ytmp4?url=${encodeURIComponent(youtubeUrl)}`;
+    const baseUrl = getApi('ytdlFallbacks').okatsuBaseUrl || 'https://okatsu-rolezapiiz.vercel.app';
+    const apiUrl = `${baseUrl}/downloader/ytmp4?url=${encodeURIComponent(youtubeUrl)}`;
     const res = await tryRequest(() => axios.get(apiUrl, AXIOS_DEFAULTS));
     if (res?.data?.result?.mp4) {
       return { download: res.data.result.mp4, title: res.data.result.title };
@@ -424,7 +454,8 @@ const APIs = {
   
   // TikTok Download API
   getTikTokDownload: async (url) => {
-    const apiUrl = `https://api.siputzx.my.id/api/d/tiktok?url=${encodeURIComponent(url)}`;
+    const baseUrl = getApi('siputzx').baseUrl || 'https://api.siputzx.my.id';
+    const apiUrl = `${baseUrl}/api/d/tiktok?url=${encodeURIComponent(url)}`;
     try {
       const response = await axios.get(apiUrl, { 
         timeout: 15000,
@@ -463,7 +494,8 @@ const APIs = {
   // Screenshot Website API
   screenshotWebsite: async (url) => {
     try {
-      const apiUrl = `https://eliteprotech-apis.zone.id/ssweb?url=${encodeURIComponent(url)}`;
+      const baseUrl = getApi('ytdlFallbacks').eliteprotechBaseUrl || 'https://eliteprotech-apis.zone.id';
+      const apiUrl = `${baseUrl}/ssweb?url=${encodeURIComponent(url)}`;
       const response = await axios.get(apiUrl, {
         timeout: 30000,
         responseType: 'arraybuffer',
@@ -494,7 +526,8 @@ const APIs = {
   // Text to Speech API
   textToSpeech: async (text) => {
     try {
-      const apiUrl = `https://www.laurine.site/api/tts/tts-nova?text=${encodeURIComponent(text)}`;
+      const baseUrl = getApi('ttsNova').baseUrl || 'https://www.laurine.site';
+      const apiUrl = `${baseUrl}/api/tts/tts-nova?text=${encodeURIComponent(text)}`;
       const response = await axios.get(apiUrl, {
         timeout: 30000,
         headers: {
@@ -514,15 +547,19 @@ const APIs = {
           const data = response.data.data;
           if (data.URL) return data.URL;
           if (data.url) return data.url;
-          if (data.MP3) return `https://ttsmp3.com/created_mp3_ai/${data.MP3}`;
-          if (data.mp3) return `https://ttsmp3.com/created_mp3_ai/${data.mp3}`;
+          const ttsmp3Base = getApi('ttsmp3').baseUrl || 'https://ttsmp3.com';
+          if (data.MP3) return `${ttsmp3Base}/created_mp3_ai/${data.MP3}`;
+          if (data.mp3) return `${ttsmp3Base}/created_mp3_ai/${data.mp3}`;
         }
         
         // Check top-level URL fields
         if (response.data.URL) return response.data.URL;
         if (response.data.url) return response.data.url;
-        if (response.data.MP3) return `https://ttsmp3.com/created_mp3_ai/${response.data.MP3}`;
-        if (response.data.mp3) return `https://ttsmp3.com/created_mp3_ai/${response.data.mp3}`;
+        {
+          const ttsmp3Base = getApi('ttsmp3').baseUrl || 'https://ttsmp3.com';
+          if (response.data.MP3) return `${ttsmp3Base}/created_mp3_ai/${response.data.MP3}`;
+          if (response.data.mp3) return `${ttsmp3Base}/created_mp3_ai/${response.data.mp3}`;
+        }
       }
       
       throw new Error('Invalid API response structure');

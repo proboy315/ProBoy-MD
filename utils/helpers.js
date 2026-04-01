@@ -6,6 +6,7 @@ const axios = require('axios');
 const { downloadContentFromMessage } = require('@whiskeysockets/baileys');
 const fs = require('fs');
 const path = require('path');
+const config = require('../config');
 
 /**
  * Download media from message
@@ -94,7 +95,8 @@ const uploadFile = async (buffer) => {
     const form = new FormData();
     form.append('file', buffer, { filename: 'file' });
     
-    const response = await axios.post('https://file.io', form, {
+    const uploadUrl = config.apis?.fileio?.uploadUrl || 'https://file.io';
+    const response = await axios.post(uploadUrl, form, {
       headers: form.getHeaders()
     });
     
