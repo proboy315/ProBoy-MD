@@ -18,7 +18,7 @@ module.exports = {
       try {
         ppUrl = await sock.profilePictureUrl(from, 'image');
       } catch {
-        ppUrl = 'https://telegra.ph/file/265c672094dfa87caea19.jpg';
+        ppUrl = config.apis?.defaultAssets?.fallbackGroupPpUrl || 'https://telegra.ph/file/265c672094dfa87caea19.jpg';
       }
 
       const created = groupMetadata.creation ? new Date(groupMetadata.creation * 1000).toLocaleString() : 'Unknown';
