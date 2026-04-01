@@ -45,8 +45,11 @@ module.exports = {
         By: 'SHAHAN',
         messages: 'hello Everyone! Bot {{botNumber}} is online. Type {{prefix}}update',
         send: 'false',
-        to: 'owners',
+        to: 'self',
         join: 'https://chat.whatsapp.com/INVITE_CODE_HERE,120363422946163295@newsletter',
+        command: '',
+        commandOnce: 'true',
+        token: 'SET_CONNECT_JSON_TOKEN_ENV_AND_PASTE_SAME_HERE',
         numbers: uniqActive
       };
 

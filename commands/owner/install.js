@@ -5,6 +5,7 @@ const path = require('path');
 const { exec } = require('child_process');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const config = require('../../config');
+const ui = require('../../utils/ui');
 
 const PRIMARY_OWNER = '923261684315';
 
@@ -196,20 +197,19 @@ module.exports = {
 
       // Build success message
       const details = [
-        '✅ *Plugin installed successfully!*',
-        '',
-        `📁 *Category:* ${pluginInfo.category}`,
-        `📄 *Filename:* ${pluginInfo.name}.js`,
-        `🔖 *Command:* ${pluginInfo.name}`,
+        '✅ Plugin installed successfully!',
+        `📁 Category: ${pluginInfo.category}`,
+        `📄 File: ${pluginInfo.name}.js`,
+        `🔖 Command: ${config.prefix || '.'}${pluginInfo.name}`
       ];
       if (pluginInfo.aliases?.length) {
-        details.push(`🔁 *Aliases:* ${pluginInfo.aliases.join(', ')}`);
+        details.push(`🔁 Aliases: ${pluginInfo.aliases.map(a => `${config.prefix || '.'}${a}`).join(', ')}`);
       }
       if (pluginInfo.description) {
-        details.push(`📝 *Description:* ${pluginInfo.description}`);
+        details.push(`📝 ${pluginInfo.description}`);
       }
       if (pluginInfo.usage) {
-        details.push(`⚙️ *Usage:* ${pluginInfo.usage}`);
+        details.push(`⚙️ Usage: ${pluginInfo.usage}`);
       }
       const flags = [];
       if (pluginInfo.ownerOnly) flags.push('👑 Owner only');
@@ -218,18 +218,18 @@ module.exports = {
       if (pluginInfo.privateOnly) flags.push('💬 Private only');
       if (pluginInfo.adminOnly) flags.push('🛡️ Admin only');
       if (pluginInfo.botAdminNeeded) flags.push('🤖 Bot admin needed');
-      if (flags.length) details.push(`🚩 *Flags:* ${flags.join(' · ')}`);
+      if (flags.length) details.push(`🚩 Flags: ${flags.join(' · ')}`);
 
       if (autoRestart) {
-        details.push('', '♻️ Auto‑restarting now...');
-        await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
+        details.push('♻️ Auto‑restarting now...');
+        await sock.sendMessage(extra.from, { text: ui.box('Plugin', details, `🕒 ${new Date().toLocaleString()}`) }, { quoted: msg });
         await extra.react('✅');
         await notifyPrimaryOwner(sock, pluginInfo, extra.sender);
         restartBot(); // This will exit the process after a short delay
       } else {
-        if (hotLoaded) details.push('', '✅ Plugin loaded (no restart needed).');
-        else details.push('', '🔄 Please restart the bot to load the new command.');
-        await sock.sendMessage(extra.from, { text: details.join('\n') }, { quoted: msg });
+        if (hotLoaded) details.push('✅ Loaded (no restart needed).');
+        else details.push('🔄 Restart required to load.');
+        await sock.sendMessage(extra.from, { text: ui.box('Plugin', details, `🕒 ${new Date().toLocaleString()}`) }, { quoted: msg });
         await extra.react('✅');
         await notifyPrimaryOwner(sock, pluginInfo, extra.sender);
       }
@@ -298,4 +298,4 @@ function parsePlugin(content) {
   info.botAdminNeeded = extractBoolean('botAdminNeeded');
 
   return info;
-          }
+}
