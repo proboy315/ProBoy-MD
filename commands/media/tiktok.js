@@ -1,10 +1,13 @@
 /**
- * TikTok Downloader Plugin – Multi‑API Fallback
- * Uses extra.config for bot name.
+ * TikTok Downloader – Multi‑Method File Download
+ * Downloads video directly, saves temp file, sends, and cleans up.
  */
 
 const axios = require('axios');
 const { ttdl } = require('ab-downloader');
+const fs = require('fs');
+const path = require('path');
+const { tmpdir } = require('os');
 
 const USER_AGENTS = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -12,7 +15,7 @@ const USER_AGENTS = [
   'okhttp/4.9.3'
 ];
 
-// Expand short TikTok URLs (vt.tiktok.com) to full URL
+// Expand short TikTok URLs (vt.tiktok.com)
 async function expandTikTokUrl(shortUrl) {
   try {
     const response = await axios.get(shortUrl, {
@@ -22,7 +25,6 @@ async function expandTikTokUrl(shortUrl) {
     });
     return response.headers.location;
   } catch (e) {
-    // If redirect fails, return original
     return shortUrl;
   }
 }
@@ -32,8 +34,8 @@ function extractUsername(url) {
   return match ? match[1] : null;
 }
 
-// ==================== METHOD 1: ab-downloader ====================
-async function fetchWithAbDownloader(url) {
+// ==================== METHOD 1: ab-downloader (returns video URL) ====================
+async function getVideoUrlFromAbDownloader(url) {
   try {
     const response = await ttdl(url);
     if (response && response.video && response.video[0]) {
@@ -49,8 +51,8 @@ async function fetchWithAbDownloader(url) {
   return null;
 }
 
-// ==================== METHOD 2: TikMate API ====================
-async function fetchWithTikMate(url) {
+// ==================== METHOD 2: TikMate (returns video URL) ====================
+async function getVideoUrlFromTikMate(url) {
   try {
     const apiUrl = `https://api.tikmate.app/api/tiktok?url=${encodeURIComponent(url)}`;
     const response = await axios.get(apiUrl, {
@@ -69,8 +71,8 @@ async function fetchWithTikMate(url) {
   return null;
 }
 
-// ==================== METHOD 3: TikDown.io API ====================
-async function fetchWithTikDown(url) {
+// ==================== METHOD 3: TikDown.io (returns video URL) ====================
+async function getVideoUrlFromTikDown(url) {
   try {
     const form = new URLSearchParams();
     form.append('q', url);
@@ -95,27 +97,19 @@ async function fetchWithTikDown(url) {
   return null;
 }
 
-// ==================== METHOD 4: dl.tiktokio.com (based on your screenshot) ====================
-async function fetchWithTikTokio(url) {
+// ==================== METHOD 4: Direct download from any URL (if we already have one) ====================
+async function downloadVideoBuffer(videoUrl) {
   try {
-    const videoIdMatch = url.match(/\/video\/(\d+)/);
-    if (!videoIdMatch) return null;
-    const videoId = videoIdMatch[1];
-    const apiUrl = `https://dl.tiktokio.com/api/v1/tiktok?url=${encodeURIComponent(url)}`;
-    const response = await axios.get(apiUrl, {
-      timeout: 15000,
+    const response = await axios.get(videoUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000,
       headers: { 'User-Agent': USER_AGENTS[0] }
     });
-    const data = response.data;
-    if (data && data.video && data.video[0]) {
-      return {
-        videoUrl: data.video[0],
-        title: data.title || 'TikTok Video',
-        username: extractUsername(url)
-      };
-    }
-  } catch (e) {}
-  return null;
+    return Buffer.from(response.data);
+  } catch (e) {
+    console.log('Direct download failed:', e.message);
+    return null;
+  }
 }
 
 // ==================== MAIN COMMAND ====================
@@ -127,7 +121,7 @@ module.exports = {
   usage: '.tiktok <url>',
 
   async execute(sock, msg, args, extra) {
-    const { from, reply, react, config } = extra; // Use extra.config
+    const { from, reply, react, config } = extra;
 
     let url = args.join(' ').trim();
     if (!url) {
@@ -143,42 +137,55 @@ module.exports = {
         if (fullUrl) url = fullUrl;
       }
 
-      // Try methods in order
-      const methods = [
-        { name: 'ab-downloader', func: fetchWithAbDownloader },
-        { name: 'TikMate', func: fetchWithTikMate },
-        { name: 'TikDown.io', func: fetchWithTikDown },
-        { name: 'TikTokio', func: fetchWithTikTokio }
+      // Step 1: Get a working video URL
+      const urlProviders = [
+        { name: 'ab-downloader', func: getVideoUrlFromAbDownloader },
+        { name: 'TikMate', func: getVideoUrlFromTikMate },
+        { name: 'TikDown.io', func: getVideoUrlFromTikDown }
       ];
 
-      let result = null;
-      for (const method of methods) {
+      let videoInfo = null;
+      for (const provider of urlProviders) {
         try {
-          result = await method.func(url);
-          if (result && result.videoUrl) {
-            console.log(`✅ TikTok download succeeded with ${method.name}`);
+          const info = await provider.func(url);
+          if (info && info.videoUrl) {
+            videoInfo = info;
+            console.log(`✅ Got video URL from ${provider.name}`);
             break;
           }
         } catch (err) {
-          console.log(`❌ ${method.name} failed:`, err.message);
+          console.log(`❌ ${provider.name} failed:`, err.message);
         }
       }
 
-      if (!result || !result.videoUrl) {
-        throw new Error('All download methods failed. The video may be private or region-restricted.');
+      if (!videoInfo || !videoInfo.videoUrl) {
+        throw new Error('Could not get a valid video URL from any source.');
       }
 
-      // Build caption using config from extra
-      let caption = `🎵 *${result.title}*`;
-      if (result.username) caption += `\n👤 *Username:* @${result.username}`;
+      // Step 2: Download the video file
+      const videoBuffer = await downloadVideoBuffer(videoInfo.videoUrl);
+      if (!videoBuffer) {
+        throw new Error('Failed to download video file.');
+      }
+
+      // Step 3: Save to temp file
+      const tempFile = path.join(tmpdir(), `tiktok_${Date.now()}.mp4`);
+      fs.writeFileSync(tempFile, videoBuffer);
+
+      // Step 4: Build caption
+      let caption = `🎵 *${videoInfo.title}*`;
+      if (videoInfo.username) caption += `\n👤 *Username:* @${videoInfo.username}`;
       caption += `\n\n${config.botName}`;
 
-      // Send video
+      // Step 5: Send video
       await sock.sendMessage(from, {
-        video: { url: result.videoUrl },
+        video: { url: tempFile },
         mimetype: 'video/mp4',
         caption: caption.trim()
       }, { quoted: msg });
+
+      // Step 6: Clean up
+      fs.unlinkSync(tempFile);
 
       await react('✅');
     } catch (error) {
