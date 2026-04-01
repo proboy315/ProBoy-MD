@@ -1,4 +1,5 @@
 const axios = require('axios');
+const config = require('../../config');
 
 module.exports = {
   name: 'advice',
@@ -10,7 +11,9 @@ module.exports = {
     const { reply, react } = extra;
     try {
       await react('💡');
-      const res = await axios.get('https://api.princetechn.com/api/fun/advice?apikey=prince');
+      const baseUrl = config.apis?.princetech?.baseUrl || 'https://api.princetechn.com/api';
+      const apikey = config.apis?.princetech?.apiKey || 'prince';
+      const res = await axios.get(`${baseUrl}/fun/advice`, { params: { apikey }, timeout: 30000 });
       if (res.data?.result) await reply(res.data.result);
       else await reply('❌ No advice found.');
       await react('✅');
