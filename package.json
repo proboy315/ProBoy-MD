@@ -11,6 +11,8 @@
   "author": "SHAHAN",
   "license": "MIT",
   "dependencies": {
+            "@bochilteam/scraper": "^5.0.1",
+         "mumaker": "^2.0.0",
     "@whiskeysockets/baileys": "^v7.0.0-rc.9",
     "axios": "^1.7.2",
     "canvas": "^3.2.1",
