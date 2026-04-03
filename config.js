@@ -9,7 +9,7 @@ module.exports = {
     
     // Bot Configuration
     botName: 'ProBoy-MD',
-    version: '1.0.0',
+    version: '3.0.2',
     prefix: '.',
     sessionName: 'session',
     sessionID: process.env.SESSION_ID || '',
