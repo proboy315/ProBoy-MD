@@ -39,7 +39,6 @@ module.exports = {
   description: '📸 Download Instagram reels/videos',
   usage: '.ig <instagram url>',
 
-  // ✅ IMPORTANT: This function MUST be async
   async execute(sock, msg, args, extra) {
     const { from, reply, react } = extra;
 
@@ -78,69 +77,6 @@ module.exports = {
       else errorMsg += ` ${error.message}`;
       await reply(errorMsg);
       await react('❌');
-    }
-  }
-};  aliases: ['igdl', 'instagram'],
-  category: 'media',
-  description: '📸 Download Instagram reels/videos',
-  usage: '.ig <instagram url>',
-
-  async execute(sock, msg, args, extra) {
-    const { from, reply, react } = extra;
-
-    const url = args.join(' ').trim();
-    if (!url) {
-      return reply(`❌ Please provide an Instagram URL.\n*Usage:* ${this.usage}`);
-    }
-
-    try {
-      await react('⏳');
-
-      const apiUrl = `https://backend1.tioo.eu.org/igdl?url=${encodeURIComponent(url)}`;
-      const response = await fetchWithRetry(apiUrl, 3, 15000);
-
-      const data = response.data;
-      if (!Array.isArray(data) || data.length === 0 || !data[0]?.url) {
-        throw new Error('No media found at the provided URL.');
-      }
-
-      const media = data[0];
-      const videoUrl = media.url;
-
-      const caption = `📸 *Instagram Video Downloaded*\n🔗 *URL:* ${url}\n\n${config.botName}`;
-
-      await sock.sendMessage(from, {
-        video: { url: videoUrl },
-        mimetype: 'video/mp4',
-        caption: caption
-      }, { quoted: msg });
-
-      await react('✅');
-    } catch (error) {
-      console.error('Instagram download error:', error);
-      let errorMsg = '❌ Failed to download.';
-      if (error.code === 'ECONNABORTED') errorMsg += ' Request timed out.';
-      else errorMsg += ` ${error.message}`;
-      await reply(errorMsg);
-      await react('❌');
-    }
-  }
-};      // Prepare caption
-      const caption = `📸 *Instagram Video Downloaded*\n🔗 * URL:* ${url}\n\n${config.botName}`;
-
-      // Send the video
-      await sock.sendMessage(extra.from, {
-        video: { url: media.url },
-        mimetype: 'video/mp4',
-        caption: caption
-      }, { quoted: msg });
-
-      // Success reaction
-      await extra.react('✅');
-    } catch (error) {
-      console.error('Instagram download error:', error);
-      await extra.reply(`❌ Failed to download: ${error.message}`);
-      await extra.react('❌');
     }
   }
 };
