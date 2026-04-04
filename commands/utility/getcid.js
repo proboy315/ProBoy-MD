@@ -1,10 +1,7 @@
 /**
  * Get WhatsApp Channel ID (Newsletter JID) from invite link
  * Uses Baileys newsletterMetadata method.
- * Includes copy button for the channel ID.
  */
-
-const { sendInteractiveMessage } = require('gifted-btns');
 
 module.exports = {
   name: 'getcid',
@@ -14,7 +11,7 @@ module.exports = {
   usage: '.getcid <channel-invite-link>',
 
   async execute(sock, msg, args, extra) {
-    const { reply, react, from } = extra;
+    const { reply, react } = extra;
 
     const link = args[0];
     if (!link) {
@@ -58,18 +55,7 @@ module.exports = {
 ┃✯│ 🔗 *Invite Link:* ${link}
 ╰══════════════════⊷❍`;
 
-      // Send interactive message with copy button
-      await sendInteractiveMessage(sock, from, {
-        text: resultText,
-        footer: 'ProBoy‑MD',
-        interactiveButtons: [
-          {
-            name: 'copy',
-            buttonParamsJson: JSON.stringify({ display_text: '📋 Copy Channel ID', id: channelId })
-          }
-        ]
-      }, { quoted: msg });
-
+      await reply(resultText);
       await react('✅');
     } catch (error) {
       console.error('Get channel ID error:', error);
