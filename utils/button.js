@@ -1,5 +1,5 @@
 /**
- * ProBoy-MD Button Utility
+ * ProBoy-MD Button Utility (FIXED)
  * 
  * Usage:
  *   const { sendButtons, handleButtonResponse } = require('../utils/button');
@@ -9,28 +9,19 @@
  *       footer: 'ProBoy-MD',
  *       buttons: [
  *           { type: 'quick_reply', displayText: 'Alive', id: 'cmd_.alive' },
- *           { type: 'quick_reply', displayText: 'Menu', id: 'cmd_.menu' },
  *           { type: 'copy', displayText: 'Copy Code', copyCode: '123456' },
  *           { type: 'url', displayText: 'Website', url: 'https://proboy.vercel.app' }
  *       ]
  *   });
- * 
- *   // In handleMessage or execute, call:
- *   await handleButtonResponse(sock, msg, extra);
  */
 
 const { sendInteractiveMessage } = require('gifted-btns');
 
 /**
- * Send interactive buttons to a chat
+ * Send interactive buttons to a chat (FIXED FOR WHATSAPP)
  * @param {Object} sock - WhatsApp socket
  * @param {string} jid - Chat JID
  * @param {Object} options - Button options
- * @param {string} options.text - Main message text
- * @param {string} [options.footer] - Footer text
- * @param {Array} options.buttons - Array of button objects
- * @param {Object} [options.quoted] - Quoted message
- * @returns {Promise<Object>} - Baileys sendMessage result
  */
 async function sendButtons(sock, jid, options = {}) {
     const {
@@ -43,9 +34,11 @@ async function sendButtons(sock, jid, options = {}) {
     if (!text) throw new Error('Button message requires text');
     if (!buttons.length) throw new Error('At least one button is required');
 
+    // WhatsApp requires specific button structure
     const interactiveButtons = buttons.map(btn => {
         switch (btn.type) {
             case 'copy':
+                // ✅ CORRECT: cta_copy
                 return {
                     name: 'cta_copy',
                     buttonParamsJson: JSON.stringify({
@@ -54,14 +47,16 @@ async function sendButtons(sock, jid, options = {}) {
                     })
                 };
             case 'url':
+                // ✅ CORRECT: cta_url
                 return {
-                    name: 'url',
+                    name: 'cta_url',
                     buttonParamsJson: JSON.stringify({
                         display_text: btn.displayText || 'Open Link',
                         url: btn.url || 'https://proboy.vercel.app'
                     })
                 };
             case 'quick_reply':
+                // ✅ CORRECT: quick_reply
                 return {
                     name: 'quick_reply',
                     buttonParamsJson: JSON.stringify({
@@ -79,6 +74,7 @@ async function sendButtons(sock, jid, options = {}) {
         throw new Error('No valid buttons to send');
     }
 
+    // Use the library's function with correct structure
     return await sendInteractiveMessage(sock, jid, {
         text,
         footer,
@@ -88,26 +84,35 @@ async function sendButtons(sock, jid, options = {}) {
 
 /**
  * Handle button response and execute command if it's a command button
- * Call this inside your plugin's execute function or in a global handler
- * 
- * @param {Object} sock - WhatsApp socket
- * @param {Object} msg - Message object from Baileys
- * @param {Object} extra - The extra object from handler
- * @returns {Promise<boolean>} - True if a command was executed, false otherwise
  */
 async function handleButtonResponse(sock, msg, extra) {
-    // Check if this is a button response message
-    const buttonResponse = msg?.message?.buttonsResponseMessage;
+    // Get the message content
+    const content = msg?.message;
+    if (!content) return false;
+
+    // Check for button response in different possible locations
+    const buttonResponse = 
+        content.buttonsResponseMessage || 
+        content.interactiveResponseMessage ||
+        msg.message?.buttonsResponseMessage ||
+        msg.message?.interactiveResponseMessage;
+
     if (!buttonResponse) return false;
 
-    const buttonId = buttonResponse?.selectedButtonId;
+    // Extract button ID
+    const buttonId = 
+        buttonResponse.selectedButtonId ||
+        buttonResponse.buttonReplyMessage?.selectedId ||
+        buttonResponse.id ||
+        null;
+
     if (!buttonId) return false;
 
     // Check if it's a command button (id starts with 'cmd_')
     if (!buttonId.startsWith('cmd_')) return false;
 
     // Extract the command (remove 'cmd_' prefix)
-    const fullCommand = buttonId.slice(4); // e.g., ".alive" or "alive"
+    let fullCommand = buttonId.slice(4);
     
     // Add prefix if missing
     const prefix = extra.config?.prefix || '.';
@@ -134,17 +139,13 @@ async function handleButtonResponse(sock, msg, extra) {
         return true;
     } catch (error) {
         console.error(`Button command error (${commandName}):`, error.message);
-        await extra.reply(`❌ Error executing command: ${error.message}`);
+        await extra.reply(`❌ Error: ${error.message}`);
         return false;
     }
 }
 
 /**
  * Create a simple menu with buttons that execute commands
- * @param {Object} sock - WhatsApp socket
- * @param {string} jid - Chat JID
- * @param {Array} commandList - Array of { name: 'Alive', cmd: 'alive' }
- * @param {string} [title] - Menu title
  */
 async function sendCommandMenu(sock, jid, commandList, title = '📋 *Command Menu*') {
     const buttons = commandList.map(item => ({
@@ -159,13 +160,15 @@ async function sendCommandMenu(sock, jid, commandList, title = '📋 *Command Me
         chunkedButtons.push(buttons.slice(i, i + 3));
     }
 
-    for (const chunk of chunkedButtons) {
+    for (let i = 0; i < chunkedButtons.length; i++) {
+        const chunk = chunkedButtons[i];
         await sendButtons(sock, jid, {
-            text: chunk === chunkedButtons[0] ? title : 'More options:',
+            text: i === 0 ? title : 'More options:',
             footer: 'ProBoy-MD',
             buttons: chunk
         });
-        await new Promise(r => setTimeout(r, 500)); // Small delay to avoid rate limits
+        // Small delay to avoid rate limits
+        await new Promise(r => setTimeout(r, 500));
     }
 }
 
