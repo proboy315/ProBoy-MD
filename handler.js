@@ -1,6 +1,6 @@
 /**
  * Message Handler - Processes incoming messages and executes commands
- * + Integrated Button Support (cmd_ prefix triggers commands)
+ * + Integrated Button Support (FIXED for quick_reply)
  */
 
 const config = require('./config');
@@ -335,26 +335,17 @@ const isSystemJid = (jid) => {
          jid.includes('@newsletter.');
 };
 
-// ==================== BUTTON HANDLER INTEGRATION ====================
-/**
- * Handles button responses using the button utility.
- * Returns true if a command was executed via button, false otherwise.
- */
+// ==================== BUTTON HANDLER INTEGRATION (FIXED) ====================
 async function handleButtonCommand(sock, msg, extra) {
     try {
-        // Check if button utility exists
         const buttonUtils = require('./utils/button');
-        if (!buttonUtils || typeof buttonUtils.handleButtonResponse !== 'function') {
-            return false;
+        if (buttonUtils && typeof buttonUtils.handleButtonResponse === 'function') {
+            return await buttonUtils.handleButtonResponse(sock, msg, extra);
         }
-        
-        // Call the utility's handler
-        const handled = await buttonUtils.handleButtonResponse(sock, msg, extra);
-        return handled;
     } catch (error) {
-        // Button utility not available or error - continue normal processing
-        return false;
+        // Fallback to direct extraction below
     }
+    return false;
 }
 // ====================================================================
 
@@ -439,7 +430,7 @@ const handleMessage = async (sock, msg) => {
     
     if (!content || actualMessageTypes.length === 0) return;
     
-    // ==================== ANTIDELETE HOOK: Call handleMessage for all commands ====================
+    // ==================== ANTIDELETE HOOK ====================
     const senderIsAdmin = isGroup ? await isAdmin(sock, sender, from, groupMetadata) : false;
     const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata) : false;
 
@@ -471,10 +462,9 @@ const handleMessage = async (sock, msg) => {
         }
       }
     }
-    // ==============================================================================================
+    // =================================================================
     
-    // ==================== INTEGRATED BUTTON COMMAND HANDLER ====================
-    // Check if this is a button response that should trigger a command (cmd_ prefix)
+    // ==================== BUTTON COMMAND HANDLER (FIXED) ====================
     try {
         const extra = {
             from,
@@ -497,12 +487,56 @@ const handleMessage = async (sock, msg) => {
             react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
         };
         
-        const buttonHandled = await handleButtonCommand(sock, msg, extra);
-        if (buttonHandled) {
-            return; // Button command executed successfully, stop further processing
+        // First try the utility
+        const handled = await handleButtonCommand(sock, msg, extra);
+        if (handled) return;
+        
+        // FALLBACK: Direct extraction
+        const btnResponse = content?.buttonsResponseMessage || 
+                           content?.interactiveResponseMessage ||
+                           msg.message?.buttonsResponseMessage ||
+                           msg.message?.interactiveResponseMessage;
+                           
+        if (btnResponse) {
+            let buttonId = btnResponse.selectedButtonId ||
+                          btnResponse.buttonReplyMessage?.selectedId ||
+                          btnResponse.id;
+                          
+            // If still no ID, try to map from the message body (quick reply fallback)
+            if (!buttonId) {
+                const body = content?.conversation || 
+                            content?.extendedTextMessage?.text || '';
+                const textToCommand = {
+                    '❤️ Alive': '.alive',
+                    '📋 Menu': '.menu',
+                    '🏓 Ping': '.ping',
+                    'ℹ️ Info': '.info',
+                    '🛠️ Owner': '.owner'
+                };
+                if (textToCommand[body]) {
+                    buttonId = 'cmd_' + textToCommand[body];
+                }
+            }
+            
+            if (buttonId && buttonId.startsWith('cmd_')) {
+                let fullCommand = buttonId.slice(4);
+                const prefix = config.prefix || '.';
+                const command = fullCommand.startsWith(prefix) ? fullCommand : prefix + fullCommand;
+                
+                const args = command.slice(prefix.length).trim().split(/ +/);
+                const commandName = args.shift()?.toLowerCase();
+                
+                if (commandName) {
+                    const cmd = commands.get(commandName);
+                    if (cmd && typeof cmd.execute === 'function') {
+                        await cmd.execute(sock, msg, args, extra);
+                        return;
+                    }
+                }
+            }
         }
     } catch (btnError) {
-        // Silently continue – button handling is optional
+        // Silently continue
     }
     // ========================================================================
     
@@ -566,15 +600,9 @@ const handleMessage = async (sock, msg) => {
       }
     }
 
-    // ==================== BUTTON DISPATCH: plugin handleButtonResponse ====================
+    // ==================== PLUGIN BUTTON HOOK ====================
     const interactive = content?.interactiveResponseMessage || msg.message?.interactiveResponseMessage;
     const buttonsResponse = content?.buttonsResponseMessage || msg.message?.buttonsResponseMessage;
-    const selectedId =
-      buttonsResponse?.selectedButtonId ||
-      interactive?.nativeFlowResponseMessage?.paramsJson ||
-      interactive?.buttonReplyMessage?.selectedId ||
-      interactive?.id ||
-      null;
 
     const buttonPayload = buttonsResponse || interactive;
 
@@ -622,6 +650,9 @@ const handleMessage = async (sock, msg) => {
     }
     
     body = (body || '').trim();
+    
+    // ... (rest of the handler remains exactly the same) ...
+    // (I'll include the rest of the file below for completeness)
     
     if (isGroup) {
       const groupSettings = getDb(sock).getGroupSettings(from);
