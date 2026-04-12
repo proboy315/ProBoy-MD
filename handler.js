@@ -1,5 +1,6 @@
 /**
  * Message Handler - Processes incoming messages and executes commands
+ * + Integrated Button Support (cmd_ prefix triggers commands)
  */
 
 const config = require('./config');
@@ -334,6 +335,29 @@ const isSystemJid = (jid) => {
          jid.includes('@newsletter.');
 };
 
+// ==================== BUTTON HANDLER INTEGRATION ====================
+/**
+ * Handles button responses using the button utility.
+ * Returns true if a command was executed via button, false otherwise.
+ */
+async function handleButtonCommand(sock, msg, extra) {
+    try {
+        // Check if button utility exists
+        const buttonUtils = require('./utils/button');
+        if (!buttonUtils || typeof buttonUtils.handleButtonResponse !== 'function') {
+            return false;
+        }
+        
+        // Call the utility's handler
+        const handled = await buttonUtils.handleButtonResponse(sock, msg, extra);
+        return handled;
+    } catch (error) {
+        // Button utility not available or error - continue normal processing
+        return false;
+    }
+}
+// ====================================================================
+
 // Main message handler
 const handleMessage = async (sock, msg) => {
   try {
@@ -448,6 +472,39 @@ const handleMessage = async (sock, msg) => {
       }
     }
     // ==============================================================================================
+    
+    // ==================== INTEGRATED BUTTON COMMAND HANDLER ====================
+    // Check if this is a button response that should trigger a command (cmd_ prefix)
+    try {
+        const extra = {
+            from,
+            sender,
+            isGroup,
+            groupMetadata,
+            isOwner: isOwner(sender),
+            isAdmin: senderIsAdmin,
+            isBotAdmin: botIsAdmin,
+            isMod: isMod(sock, sender),
+            config,
+            database: getDb(sock),
+            utils: {
+                getMessageContent,
+                normalizeJidWithLid,
+                normalizeJid,
+                buildComparableIds
+            },
+            reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
+            react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+        };
+        
+        const buttonHandled = await handleButtonCommand(sock, msg, extra);
+        if (buttonHandled) {
+            return; // Button command executed successfully, stop further processing
+        }
+    } catch (btnError) {
+        // Silently continue – button handling is optional
+    }
+    // ========================================================================
     
     const btn = content.buttonsResponseMessage || msg.message?.buttonsResponseMessage;
     if (btn) {
@@ -1252,6 +1309,6 @@ module.exports = {
   isMod,
   getGroupMetadata,
   findParticipant,
-  commands, // Export commands for use in index.js delete event
+  commands,
   reloadCommands
 };
