@@ -56,7 +56,7 @@ module.exports = {
 ┃✯│ 🌐 *Server:* ${server}
 ╰══════════════════⊷❍`;
 
-            const response = `${targetJid}`;
+            
 
             await extra.reply(response);
             await extra.react('✅');
