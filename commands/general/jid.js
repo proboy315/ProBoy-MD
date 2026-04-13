@@ -48,13 +48,7 @@ module.exports = {
             const normalizedNumber = targetJid.split('@')[0].replace(/[^0-9]/g, '') || 'N/A';
             const server = targetJid.split('@')[1] || 'unknown';
 
-            const response = `╭═══〘 *JID INFORMATION* 〙═══⊷❍
-┃✯│ 📌 *Source:* ${sourceType}
-┃✯│ 🆔 *JID:* ${targetJid}
-┃✯│ 📱 *Type:* ${jidType}
-┃✯│ 🔢 *Number/ID:* ${normalizedNumber}
-┃✯│ 🌐 *Server:* ${server}
-╰══════════════════⊷❍`;
+            const response = `${targetJid}`;
 
             
 
