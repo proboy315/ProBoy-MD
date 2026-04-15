@@ -1,6 +1,7 @@
 /**
- * TikTok Downloader – Lightweight API
- * Uses https://backend1.tioo.eu.org/ttdl?url=...
+ * TikTok Downloader – Working with tikwm.com API
+ * Fetches video details, downloads no-watermark video, and sends with rich caption.
+ * No interactive buttons – just video and caption.
  */
 
 const axios = require('axios');
@@ -48,16 +49,25 @@ async function expandTikTokUrl(shortUrl) {
   }
 }
 
-function extractUsername(url) {
-  const match = url.match(/tiktok\.com\/@([A-Za-z0-9_.]+)/i);
-  return match ? match[1] : null;
+// Format numbers (e.g., 2524 → 2.5K)
+function formatNumber(num) {
+  if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+  if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+  return num.toString();
+}
+
+// Format duration (seconds → MM:SS)
+function formatDuration(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 module.exports = {
   name: 'tiktok',
-  aliases: ['tt', 'ttdl'],
+  aliases: ['tt', 'ttdl', 'tiktokdl'],
   category: 'media',
-  description: '🎵 Download TikTok videos (no watermark)',
+  description: '🎵 Download TikTok videos (no watermark) with rich info',
   usage: '.tiktok <url>',
 
   async execute(sock, msg, args, extra) {
@@ -70,6 +80,10 @@ module.exports = {
 
     try {
       await react('⏳');
+      const statusMsg = await sock.sendMessage(from, {
+        text: '⏳ Fetching TikTok video...'
+      }, { quoted: msg });
+      const statusKey = statusMsg.key;
 
       // Expand short URL if needed
       if (url.includes('vt.tiktok.com')) {
@@ -77,23 +91,31 @@ module.exports = {
         if (fullUrl) url = fullUrl;
       }
 
-      // Call the new lightweight API
-      const apiUrl = `https://backend1.tioo.eu.org/ttdl?url=${encodeURIComponent(url)}`;
+      // Call tikwm.com API
+      const apiUrl = `https://tikwm.com/api/?url=${encodeURIComponent(url)}`;
       const response = await fetchWithRetry(apiUrl, 3, 15000);
       const data = response.data;
 
-      if (!data?.status || !data?.video || !data.video[0]) {
-        throw new Error(data?.message || 'Invalid API response');
+      if (data.code !== 0 || !data.data) {
+        throw new Error(data.msg || 'Invalid API response');
       }
 
-      const videoUrl = data.video[0];
-      const title = data.title || 'TikTok Video';
-      const username = extractUsername(url);
+      const videoData = data.data;
 
-      // Download the video file
+      // Extract video URL (no-watermark version)
+      let videoUrl = videoData.play;
+      if (videoData.wmplay) {
+        videoUrl = videoData.wmplay;
+      }
+
+      if (!videoUrl) {
+        throw new Error('No video URL found');
+      }
+
+      // Download video
       const videoResp = await axios.get(videoUrl, {
         responseType: 'arraybuffer',
-        timeout: 30000,
+        timeout: 60000,
         headers: { 'User-Agent': USER_AGENTS[0] }
       });
       const videoBuffer = Buffer.from(videoResp.data);
@@ -102,16 +124,44 @@ module.exports = {
       const tempFile = path.join(tmpdir(), `tiktok_${Date.now()}.mp4`);
       fs.writeFileSync(tempFile, videoBuffer);
 
-      // Build caption
-      let caption = `🎵 *${title}*`;
-      if (username) caption += `\n👤 *Username:* @${username}`;
-      caption += `\n\n${config.botName}`;
+      // Extract video info
+      const title = videoData.title || 'TikTok Video';
+      const author = videoData.author?.nickname || 'Unknown';
+      const authorId = videoData.author?.unique_id || '';
+      const region = videoData.region || 'Unknown';
+      const duration = videoData.duration || 0;
+      const playCount = formatNumber(videoData.play_count || 0);
+      const diggCount = formatNumber(videoData.digg_count || 0);
+      const commentCount = formatNumber(videoData.comment_count || 0);
+      const shareCount = formatNumber(videoData.share_count || 0);
+      const musicTitle = videoData.music_info?.title || 'Unknown';
+      const musicAuthor = videoData.music_info?.author || 'Unknown';
 
-      // Send video
+      // Build caption with box format (no button)
+      const caption = `╭═══〘 *🎵 TIKTOK VIDEO* 〙═══⊷❍
+┃✯│ 📝 *Title:* ${title.length > 50 ? title.substring(0, 50) + '...' : title}
+┃✯│ 👤 *Author:* ${author} (@${authorId})
+┃✯│ 🌍 *Region:* ${region}
+┃✯│ ⏱️ *Duration:* ${formatDuration(duration)}
+┃✯│
+┃✯│ 📊 *Stats:*
+┃✯│ 👁️ Plays: ${playCount}
+┃✯│ ❤️ Likes: ${diggCount}
+┃✯│ 💬 Comments: ${commentCount}
+┃✯│ 🔄 Shares: ${shareCount}
+┃✯│
+┃✯│ 🎵 *Music:* ${musicTitle}
+┃✯│ 👨‍🎤 *Artist:* ${musicAuthor}
+╰══════════════════⊷❍`;
+
+      // Delete status message
+      try { await sock.sendMessage(from, { delete: statusKey }); } catch {}
+
+      // Send the video with caption
       await sock.sendMessage(from, {
         video: { url: tempFile },
         mimetype: 'video/mp4',
-        caption: caption.trim()
+        caption: caption
       }, { quoted: msg });
 
       // Clean up
@@ -121,8 +171,13 @@ module.exports = {
     } catch (error) {
       console.error('TikTok download error:', error);
       let errorMsg = '❌ Failed to download.';
-      if (error.code === 'ECONNABORTED') errorMsg += ' Request timed out.';
-      else errorMsg += ` ${error.message}`;
+      if (error.code === 'ECONNABORTED') {
+        errorMsg = '❌ Request timed out. Please try again.';
+      } else if (error.response?.status === 403) {
+        errorMsg = '❌ Access denied. The video may be private or region-restricted.';
+      } else if (error.message) {
+        errorMsg = `❌ ${error.message}`;
+      }
       await reply(errorMsg);
       await react('❌');
     }
