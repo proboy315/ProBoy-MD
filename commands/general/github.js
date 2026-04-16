@@ -68,8 +68,8 @@ module.exports = {
                 
                 let fallbackMessage = `╭━━『 *GitHub Repository* 』━━╮\n\n`;
                 fallbackMessage += `🤖 *Bot Name:* ${config.botName}\n`;
-                fallbackMessage += `🔗 *Repository:* ProBoy-MD\n`;
-                fallbackMessage += `👨‍💻 *Owner:* SHAHAN\n`;
+                fallbackMessage += `🔗 *Repository:* ${config.botName}\n`;
+                fallbackMessage += `👨‍💻 *Owner:* ${config.ownerName}\n`;
                 fallbackMessage += `🌐 *URL:* ${repoUrl}\n\n`;
                 fallbackMessage += `⚠️ *Note:* Unable to fetch real-time statistics.\n`;
                 fallbackMessage += `Please visit the repository directly for latest stats.\n\n`;
