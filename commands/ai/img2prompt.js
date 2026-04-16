@@ -93,7 +93,7 @@ async function uploadToImgBB(buffer) {
         const form = new FormData();
         form.append('key', IMGBB_API_KEY);
         form.append('image', buffer.toString('base64'));
-        form.append('name', `proboy_${Date.now()}.jpg`);
+        form.append('name', `${config.botName}_${Date.now()}.jpg`);
 
         const res = await axios.post(IMGBB_UPLOAD_URL, form, {
             headers: form.getHeaders(),
