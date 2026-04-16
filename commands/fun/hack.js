@@ -1,3 +1,5 @@
+const config = require('../../config');
+
 module.exports = {
   name: 'hack',
   aliases: [],
@@ -25,6 +27,7 @@ module.exports = {
       ' SENDING LOG DOCUMENTS...',
       ' SUCCESSFULLY SENT DATA AND Connection disconnected',
       'BACKLOGS CLEARED'
+      'Your Whatsapp Was Hacked By ${config.ownerName} 😏'
     ];
     for (const line of steps) {
       await sock.sendMessage(from, { text: line }, { quoted: msg });
