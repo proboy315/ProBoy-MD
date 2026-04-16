@@ -110,7 +110,7 @@ module.exports = {
 📎 *Original:* ${longUrl}
 ✨ *Shortened:* ${shortUrl}
 
-_Powered by ProBoy-MD_`;
+_Powered by ${config.botName}_`;
 
       await sock.sendMessage(from, {
         text: resultText,

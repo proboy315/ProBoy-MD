@@ -47,13 +47,7 @@ module.exports = {
       const subscribers = channelInfo.subscribers || '?';
       const state = channelInfo.state || 'ACTIVE';
 
-      const resultText = `╭═══〘 *CHANNEL ID* 〙═══⊷❍
-┃✯│ 📢 *Name:* ${name}
-┃✯│ 🆔 *ID:* ${channelId}
-┃✯│ 📝 *Description:* ${description}
-┃✯│ 👥 *Subscribers:* ${subscribers}
-┃✯│ 🔗 *Invite Link:* ${link}
-╰══════════════════⊷❍`;
+      const resultText = `${channelId}`;
 
       await reply(resultText);
       await react('✅');

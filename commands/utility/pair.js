@@ -34,7 +34,7 @@ module.exports = {
 
       // Send a temporary "waiting" message that we'll edit later
       const waitMsg = await sock.sendMessage(from, {
-        text: '⏳ Generating your pair code...\n_This may take up to 30 seconds (free Render server startup)._'
+        text: '⏳ Generating your pair code...\n_ Please Wait....._'
       }, { quoted: msg });
       const waitKey = waitMsg.key;
 
