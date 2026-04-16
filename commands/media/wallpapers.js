@@ -117,7 +117,7 @@ module.exports = {
 📂 *Category:* ${category}
 🔍 *Query:* ${query}
 
-_Powered by PrinceTech_`;
+_Powered by ${config.botName}_`;
 
           await sock.sendMessage(from, {
             image: imgBuffer,

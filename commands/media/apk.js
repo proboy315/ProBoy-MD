@@ -153,7 +153,7 @@ module.exports = {
 👤 *Developer:* ${developer || 'Unknown'}
 🔗 *Source:* ${download_url}
 
-_Powered by PrinceTech_`;
+_Powered by ${config.botName}_`;
 
       const messageOptions = {
         document: apkBuffer,
