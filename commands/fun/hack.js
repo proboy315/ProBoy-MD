@@ -27,7 +27,7 @@ module.exports = {
       ' SENDING LOG DOCUMENTS...',
       ' SUCCESSFULLY SENT DATA AND Connection disconnected',
       'BACKLOGS CLEARED'
-      'Your Whatsapp Was Hacked By ${config.ownerName} 😏'
+      'Your Whatsapp Was Hacked 😏'
     ];
     for (const line of steps) {
       await sock.sendMessage(from, { text: line }, { quoted: msg });
