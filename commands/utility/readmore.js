@@ -7,8 +7,8 @@ module.exports = {
   name: 'readmore',
   aliases: ['rdmore', 'rmore'],
   category: 'utility',
-  description: 'Generate WhatsApp readmore text',
-  usage: '.readmore Hi + how are you + I am fine',
+  description: 'Multi-step readmore with copy button',
+  usage: '.readmore 1 + 2 + 3 + 4',
 
   ownerOnly: config.MODE !== 'public',
   modOnly: false,
@@ -22,55 +22,56 @@ module.exports = {
 
     try {
       if (!args.length) {
-        return reply(
-          `❌ Please provide text.\n\nExample:\n${this.usage}`
-        );
+        return reply(`❌ Example:\n${this.usage}`);
       }
 
       const input = args.join(' ').trim();
 
       if (!input.includes('+')) {
-        return reply(
-          `❌ Use *+* to separate text.\n\nExample:\n.readmore Hi + Hidden text`
-        );
+        return reply(`❌ Use + sign\n\nExample:\n${this.usage}`);
       }
 
       await react('⏳');
 
-      // Split text
       const parts = input
         .split('+')
-        .map(v => v.trim())
-        .filter(v => v);
+        .map(x => x.trim())
+        .filter(Boolean);
 
-      if (parts.length < 2) {
-        return reply('❌ Minimum 2 text parts required.');
-      }
-
-      // Readmore chars
       const invisible = String.fromCharCode(8206).repeat(4001);
 
-      // Build final text
-      let finalText = parts[0] + '\n' + invisible;
+      let collected = '';
 
-      for (let i = 1; i < parts.length; i++) {
-        finalText += '\n' + parts[i];
+      for (let i = 0; i < parts.length; i++) {
+
+        collected += (collected ? '\n\n' : '') + parts[i];
+
+        let msgText = collected;
+
+        // If more parts remaining add readmore
+        if (i < parts.length - 1) {
+          msgText += '\n' + invisible;
+        }
+
+        await sendInteractiveMessage(sock, from, {
+          text: msgText,
+          footer: 'ProBoy-MD',
+          interactiveButtons: [
+            {
+              name: 'cta_copy',
+              buttonParamsJson: JSON.stringify({
+                display_text: '📋 Copy Text',
+                copy_code: collected
+              })
+            }
+          ]
+        }, { quoted: msg });
+
+        // delay for progressive feel
+        if (i < parts.length - 1) {
+          await new Promise(r => setTimeout(r, 1200));
+        }
       }
-
-      // Send interactive with copy button
-      await sendInteractiveMessage(sock, from, {
-        text: finalText,
-        footer: 'ProBoy-MD',
-        interactiveButtons: [
-          {
-            name: 'cta_copy',
-            buttonParamsJson: JSON.stringify({
-              display_text: '📋 Copy Text',
-              copy_code: finalText
-            })
-          }
-        ]
-      }, { quoted: msg });
 
       await react('✅');
 
