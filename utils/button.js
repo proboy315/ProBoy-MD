@@ -15,7 +15,6 @@
  *   });
  */
 
-const { sendInteractiveMessage } = require('gifted-btns');
 const config = require('../config');
 
 function extractButtonIdFromMessage(msg) {
@@ -107,12 +106,79 @@ async function sendButtons(sock, jid, options = {}) {
         throw new Error('No valid buttons to send');
     }
 
-    // Use the library's function with correct structure
     return await sendInteractiveMessage(sock, jid, {
         text,
         footer,
         interactiveButtons
     }, { quoted });
+}
+
+const buttonToLegacyQuickReply = (button) => {
+    if (button?.name !== 'quick_reply') return null;
+    try {
+        const params = JSON.parse(button.buttonParamsJson || '{}');
+        const displayText = params.display_text || 'Reply';
+        const id = params.id || `btn_${Date.now()}`;
+        return {
+            buttonId: String(id),
+            buttonText: { displayText: String(displayText) },
+            type: 1
+        };
+    } catch {
+        return null;
+    }
+};
+
+const buttonToFallbackLine = (button, index) => {
+    try {
+        const params = JSON.parse(button.buttonParamsJson || '{}');
+        if (button.name === 'cta_copy') {
+            return `${index}. ${params.display_text || 'Copy'}: ${params.copy_code || ''}`;
+        }
+        if (button.name === 'cta_url') {
+            return `${index}. ${params.display_text || 'Open'}: ${params.url || ''}`;
+        }
+        if (button.name === 'quick_reply') {
+            return `${index}. ${params.display_text || 'Reply'}: ${params.id || ''}`;
+        }
+    } catch {}
+    return null;
+};
+
+async function sendInteractiveMessage(sock, jid, content = {}, options = {}) {
+    const {
+        text = '',
+        footer = config.botName || 'Bot',
+        interactiveButtons = []
+    } = content;
+
+    const quickReplies = interactiveButtons
+        .map(buttonToLegacyQuickReply)
+        .filter(Boolean)
+        .slice(0, 3);
+
+    if (quickReplies.length) {
+        try {
+            return await sock.sendMessage(jid, {
+                text,
+                footer,
+                buttons: quickReplies,
+                headerType: 1
+            }, options);
+        } catch (error) {
+            console.error('Legacy button send failed, falling back to text:', error?.message || error);
+        }
+    }
+
+    const lines = interactiveButtons
+        .map((button, index) => buttonToFallbackLine(button, index + 1))
+        .filter(Boolean);
+
+    const fallbackText = lines.length
+        ? `${text}${footer ? `\n\n${footer}` : ''}\n\n${lines.join('\n')}`
+        : text;
+
+    return sock.sendMessage(jid, { text: fallbackText }, options);
 }
 
 /**
@@ -208,6 +274,7 @@ async function sendCommandMenu(sock, jid, commandList, title = '📋 *Command Me
 
 module.exports = {
     sendButtons,
+    sendInteractiveMessage,
     handleButtonResponse,
     extractButtonIdFromMessage,
     sendCommandMenu
