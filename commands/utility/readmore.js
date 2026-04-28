@@ -1,6 +1,6 @@
 // commands/utility/readmore.js
 
-const { sendInteractiveMessage } = require('gifted-btns');
+const { sendInteractiveMessage } = require('../../utils/button');
 const config = require('../../config');
 
 module.exports = {
@@ -10,7 +10,7 @@ module.exports = {
   description: 'Multi-step readmore with copy button',
   usage: '.readmore 1 + 2 + 3 + 4',
 
-  ownerOnly: config.MODE !== 'public',
+  ownerOnly: false,
   modOnly: false,
   groupOnly: false,
   privateOnly: false,
