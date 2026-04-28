@@ -16,6 +16,39 @@
  */
 
 const { sendInteractiveMessage } = require('gifted-btns');
+const config = require('../config');
+
+function extractButtonIdFromMessage(msg) {
+    const content = msg?.message;
+    if (!content) return null;
+
+    const direct =
+        content?.buttonsResponseMessage?.selectedButtonId ||
+        content?.buttonsResponseMessage?.buttonReplyMessage?.selectedId ||
+        content?.buttonsResponseMessage?.id;
+    if (direct) return String(direct);
+
+    const interactive =
+        content?.interactiveResponseMessage ||
+        msg?.message?.interactiveResponseMessage;
+    if (!interactive) return null;
+
+    const fromBody = interactive?.id || interactive?.selectedId || interactive?.selectedButtonId;
+    if (fromBody) return String(fromBody);
+
+    const paramsJson =
+        interactive?.nativeFlowResponseMessage?.paramsJson ||
+        interactive?.buttonReplyMessage?.nativeFlowResponseMessage?.paramsJson;
+    if (paramsJson) {
+        try {
+            const parsed = JSON.parse(paramsJson);
+            const extracted = parsed?.id || parsed?.selected_id || parsed?.selectedId || parsed?.button_id;
+            if (extracted) return String(extracted);
+        } catch {}
+    }
+
+    return null;
+}
 
 /**
  * Send interactive buttons to a chat (FIXED FOR WHATSAPP)
@@ -26,7 +59,7 @@ const { sendInteractiveMessage } = require('gifted-btns');
 async function sendButtons(sock, jid, options = {}) {
     const {
         text = '',
-        footer = 'ProBoy-MD',
+        footer = config.botName || 'Bot',
         buttons = [],
         quoted = null
     } = options;
@@ -52,7 +85,7 @@ async function sendButtons(sock, jid, options = {}) {
                     name: 'cta_url',
                     buttonParamsJson: JSON.stringify({
                         display_text: btn.displayText || 'Open Link',
-                        url: btn.url || 'https://proboy.vercel.app'
+                        url: btn.url || config.social?.website || 'https://example.com'
                     })
                 };
             case 'quick_reply':
@@ -90,23 +123,24 @@ async function handleButtonResponse(sock, msg, extra) {
     const content = msg?.message;
     if (!content) return false;
 
-    // Check for button response in different possible locations
-    const buttonResponse = 
-        content.buttonsResponseMessage || 
-        content.interactiveResponseMessage ||
-        msg.message?.buttonsResponseMessage ||
-        msg.message?.interactiveResponseMessage;
-
-    if (!buttonResponse) return false;
-
-    // Extract button ID
-    const buttonId = 
-        buttonResponse.selectedButtonId ||
-        buttonResponse.buttonReplyMessage?.selectedId ||
-        buttonResponse.id ||
-        null;
+    const buttonId = extractButtonIdFromMessage(msg);
 
     if (!buttonId) return false;
+
+    // Menu shortcut buttons (space-free IDs for better reliability)
+    if (buttonId === 'cmd_menu_home') {
+        const menuCmd = (extra.commands || require('../handler').commands)?.get('menu');
+        if (!menuCmd || typeof menuCmd.execute !== 'function') return false;
+        await menuCmd.execute(sock, msg, [], extra);
+        return true;
+    }
+    if (buttonId.startsWith('cmd_menu_cat_')) {
+        const category = buttonId.replace('cmd_menu_cat_', '').trim().toLowerCase();
+        const menuCmd = (extra.commands || require('../handler').commands)?.get('menu');
+        if (!menuCmd || typeof menuCmd.execute !== 'function') return false;
+        await menuCmd.execute(sock, msg, [category], extra);
+        return true;
+    }
 
     // Check if it's a command button (id starts with 'cmd_')
     if (!buttonId.startsWith('cmd_')) return false;
@@ -119,7 +153,7 @@ async function handleButtonResponse(sock, msg, extra) {
     const command = fullCommand.startsWith(prefix) ? fullCommand : prefix + fullCommand;
 
     // Get the handler commands map
-    const { commands } = require('../handler');
+    const commands = extra.commands || require('../handler').commands;
     if (!commands) return false;
 
     // Parse command name and args
@@ -164,7 +198,7 @@ async function sendCommandMenu(sock, jid, commandList, title = '📋 *Command Me
         const chunk = chunkedButtons[i];
         await sendButtons(sock, jid, {
             text: i === 0 ? title : 'More options:',
-            footer: 'ProBoy-MD',
+            footer: config.botName || 'Bot',
             buttons: chunk
         });
         // Small delay to avoid rate limits
@@ -175,5 +209,6 @@ async function sendCommandMenu(sock, jid, commandList, title = '📋 *Command Me
 module.exports = {
     sendButtons,
     handleButtonResponse,
+    extractButtonIdFromMessage,
     sendCommandMenu
 };
