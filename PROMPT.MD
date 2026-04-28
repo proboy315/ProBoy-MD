@@ -1,322 +1,266 @@
-# ProBoy‑MD Plugin Development Master Prompt (Repo‑Aligned)
+# ProBoy-MD Development Prompt (Production-Aligned)
 
-Use this document as a **single, all‑in‑one training prompt** for an AI (or a developer) to build **production‑ready ProBoy‑MD plugins** for this repository.
-
-This guide is aligned with the current codebase (`index.js`, `handler.js`, `database.js`, `config.js`, `commands/*`, `utils/*`).
+Use this as the primary prompt/spec for anyone building or modifying features in this repository.
+This document is aligned with current project behavior in `index.js`, `handler.js`, `config.js`, `database.js`, `commands/*`, and `utils/*`.
 
 ---
 
-## 1) Project Architecture (How ProBoy‑MD Works)
+## 1) System Overview
 
+- Runtime: Node.js (CommonJS)
 - Entry point: `index.js`
-  - Connects to WhatsApp via Baileys
-  - Handles pairing/session bootstrapping
-  - Dispatches message events into `handler.js`
-  - Dispatches delete/revoke events into plugins that implement `handleDelete`
-  - Calls optional plugin `init(sock)` once per boot
-- Command handler: `handler.js`
-  - Dynamically loads plugins from `commands/**`
-  - Parses prefix commands (default `.` from `config.js`)
-  - Enforces permission flags (`ownerOnly`, `adminOnly`, etc.)
-  - Provides `extra` helpers (`reply`, `react`, etc.)
-  - Calls optional plugin `handleMessage(sock, msg, extra)` on every message (for background features)
-- Persistence: `database.js`
-  - JSON storage inside `./database/` (single session)
-  - Multi-session: each connected number uses its own DB root under `./database/sessions/<phone>/`
-  - Chat settings: `getChatSettings(jid)` / `updateChatSettings(jid, patch)`
-  - Group settings: `getGroupSettings(id)` / `updateGroupSettings(id, patch)`
-  - Global settings: `getGlobalSetting(key)` / `setGlobalSetting(key, value)`
-- Commands layout:
+- Message router: `handler.js`
+- Command loader: `utils/commandLoader.js`
+- Storage: `database.js` + JSON files under `database/`
+- Command modules: `commands/<category>/<command>.js`
 
-```txt
-commands/
-  general/
-  media/
-  owner/
-  utility/
-  ... (other categories may exist)
-```
+Core flow:
+1. Baileys socket connects in `index.js`.
+2. Incoming messages are passed to `handler.js`.
+3. `handler.js` resolves text command OR button interaction.
+4. Matching command module `execute()` runs with `extra` helpers.
+5. Settings/state read-write via per-session DB instance (`extra.database`).
 
 ---
 
-## 2) Command Module Specification (Plugin Export)
+## 2) Command Contract (Required)
 
-Each plugin file exports **one object**:
-
-### Required fields
-
-- `name` *(string)*: main command name (example: `tiktok`)
-- `category` *(string)*: folder/category label (example: `media`)
-- `execute(sock, msg, args, extra)` *(async function)*: main command logic
-
-### Optional fields (supported by this repo)
-
-- `aliases` *(string[])*: alternative names
-- `description` *(string)*: help/menu text
-- `usage` *(string)*: usage example shown to user
-- Permission flags *(booleans)*:
-  - `ownerOnly`, `modOnly`, `groupOnly`, `privateOnly`, `adminOnly`, `botAdminNeeded`
-- Background / event hooks *(async functions)*:
-  - `init(sock)` → called once at boot (optional)
-  - `handleMessage(sock, msg, extra)` → called on every incoming message (optional)
-  - `handleDelete(sock, payload)` → called when a message is deleted/revoked (optional)
-  - `handleButtonResponse(sock, msg, extra)` → called when a button is clicked (if your handler routes it)
-
----
-
-## 3) `execute()` Signature (Repo‑Aligned `extra`)
-
-```js
-async execute(sock, msg, args, extra)
-```
-
-This repository passes these fields on `extra` (existing + extended):
-
-```js
-extra = {
-  from, sender, isGroup, groupMetadata,
-  isOwner, isAdmin, isBotAdmin, isMod,
-  reply: (text) => {},
-  react: (emoji) => {},
-
-  // Added for plugin independence:
-  config,            // config.js object
-  database,          // per-session DB instance (multi-session safe)
-  utils: {
-    getMessageContent, normalizeJidWithLid, normalizeJid, buildComparableIds
-  }
-}
-```
-
-Notes:
-- Permission flags are enforced by `handler.js`; do not re-check them inside your plugin unless you’re doing a special case.
-- Always validate arguments (`args`) and show `usage` when missing/invalid.
-
----
-
-## 4) Configuration (`config.js`)
-
-Plugins can read:
-
-- `config.prefix`, `config.botName`
-- `config.ownerNumber`, `config.ownerName`
-- `config.defaultGroupSettings` (used as defaults for chat/group settings)
-- `config.messages.*` (standard message templates)
-- `config.updateZipUrl` (used by update systems)
-- `config.antideleteSettings` (global defaults used by features that support it)
-
-Current `config.js` shape (as in this repo):
+Each command exports a single object:
 
 ```js
 module.exports = {
-  ownerNumber: ['923261684315'],
-  ownerName: ['SHAHAN'],
-  botName: 'ProBoy-MD',
-  prefix: '.',
-  sessionName: 'session',
-  sessionID: process.env.SESSION_ID || '',
-  newsletterJid: '120363422946163295@newsletter',
-  updateZipUrl: 'https://github.com/proboy315/ProBoy-MD/archive/refs/heads/main.zip',
-  packname: 'ProBoy-MD',
-  selfMode: false,
-  autoRead: false,
-  autoTyping: true,
-  autoBio: false,
-  autoSticker: false,
-  autoReact: false,
-  autoReactMode: 'bot',
-  autoDownload: false,
+  name: 'commandName',
+  category: 'general',
+  description: '...',
+  usage: '.commandName',
+  aliases: [],
 
-  defaultGroupSettings: {
-    antilink: false,
-    antilinkAction: 'delete',
-    antilinkWhitelist: [],
-    antitag: false,
-    antitagAction: 'delete',
-    antiall: false,
-    antiviewonce: false,
-    antibot: false,
-    anticall: false,
-    antigroupmention: false,
-    antigroupmentionAction: 'delete',
-    welcome: false,
-    welcomeMessage: '...',
-    goodbye: false,
-    goodbyeMessage: '...',
-    antiSpam: false,
-    antiSpamAction: 'warn',
-    antiSpamLimit: 6,
-    antiSpamWindowSec: 8,
-    antidelete: true,
-    antifake: false,
-    antifakeAllowedCodes: [],
-    antibadword: false,
-    antibadwordAction: 'warn',
-    badwords: [],
-    nsfw: false,
-    detect: false,
-    chatbot: false,
-    autosticker: false
-  },
+  // optional guards
+  ownerOnly: false,
+  modOnly: false,
+  groupOnly: false,
+  privateOnly: false,
+  adminOnly: false,
+  botAdminNeeded: false,
 
-  antideleteSettings: {
-    enabled: true,
-    dest: 'chat',
-    statusDest: 'owner',
-    bannerImageUrl: ''
-  },
-
-  apiKeys: { openai: '', deepai: '', remove_bg: '', audd: '' },
-  messages: {
-    wait: '⏳ Please wait...',
-    success: '✅ Success!',
-    error: '❌ Error occurred!',
-    ownerOnly: '👑 This command is only for bot owner!',
-    adminOnly: '🛡️ This command is only for group admins!',
-    groupOnly: '👥 This command can only be used in groups!',
-    privateOnly: '💬 This command can only be used in private chat!',
-    botAdminNeeded: '🤖 Bot needs to be admin to execute this command!',
-    invalidCommand: '❓ Invalid command! Type .menu for help'
-  },
-  timezone: 'Asia/Karachi',
-  maxWarnings: 3,
-  social: {
-    github: 'https://github.com/proboy315',
-    instagram: 'https://instagram.com/itx___proboy',
-    Tiktok: 'https://tiktok.com/@itx_ProBoy'
-  }
+  async execute(sock, msg, args, extra) {}
 };
 ```
 
+Optional hooks supported by router:
+- `init(sock)`
+- `handleMessage(sock, msg, extra)`
+- `onMessage(sock, msg, extra)`
+- `autoRun(sock, msg, extra)`
+- `handleDelete(sock, payload)`
+- `handleButtonResponse(sock, msg, extra)`
+- `handleGroupUpdate(sock, update, extra)`
+
 ---
 
-## 5) Buttons / Interactive UI (`gifted-btns`)
+## 3) `extra` Object (Available in Execute/Hooks)
 
-This repo includes `gifted-btns` for WhatsApp interactive messages.
+```js
+{
+  from,
+  sender,
+  isGroup,
+  groupMetadata,
+  isOwner,
+  isSudo,
+  isAdmin,
+  isBotAdmin,
+  isMod,
+  config,
+  commands,
+  database,
+  utils: {
+    getMessageContent,
+    normalizeJidWithLid,
+    normalizeJid,
+    buildComparableIds
+  },
+  reply: (text) => Promise,
+  react: (emoji) => Promise
+}
+```
 
-Install:
+Rules:
+- Do not hardcode brand/owner/prefix.
+- Use `extra.config` or `require('../../config')`.
+- Validate args and return usage when missing.
+
+---
+
+## 4) Menu + Button Mode (Current Behavior)
+
+### Trigger
+- `.menu`
+
+### Button mode source
+- `database/global.json` key: `menuButtonsEnabled`
+
+### Behavior when button mode = `true`
+- Home menu sends:
+  - Header block with owner/user/prefix/cmd count
+  - Category list text (`general`, `ai`, `group`, `dev`, ...)
+  - Category quick-reply buttons
+  - Final URL button: `View Channel`
+- On category button click:
+  - Sends category-only command list (e.g. DEV COMMANDS)
+  - Sends actions row with `BACK` + `View Channel`
+
+### Button IDs (must stay stable)
+- `cmd_menu_home`
+- `cmd_menu_cat_<category>`
+- Generic command pattern: `cmd_<command payload>`
+
+### Files controlling this
+- `commands/general/menu.js`
+- `utils/button.js`
+- `handler.js`
+
+---
+
+## 5) Button Utility Standard
+
+Use:
+
+```js
+const { sendButtons } = require('../../utils/button');
+```
+
+Supported button types:
+- `quick_reply` (id based)
+- `url` (cta link)
+- `copy` (copy code)
+
+Best practices:
+- Keep button IDs short and deterministic.
+- For category/state flows, prefer no spaces in IDs.
+- If flow is command-driven, start IDs with `cmd_`.
+
+---
+
+## 6) Sorting & Determinism Rules
+
+- Command loading is deterministic in `utils/commandLoader.js`:
+  - categories sorted alphabetically
+  - files sorted alphabetically
+- Menu render should remain deterministic:
+  - category order fixed in code
+  - command names sorted alphabetically before output
+- Never rely on filesystem listing order.
+
+---
+
+## 7) Config Rules (No Hardcoded Values)
+
+Use values from `config.js`:
+- `prefix`
+- `botName`
+- `ownerName`
+- `ownerNumber`
+- `newsletterJid`
+- `social.*`
+- `messages.*`
+
+Channel URL resolution fallback order for menus:
+1. `config.social.channel`
+2. `config.social.whatsappChannel`
+3. `process.env.WHATSAPP_CHANNEL_URL`
+4. `config.social.website`
+
+---
+
+## 8) Development Checklist (Before Commit)
+
+1. Syntax check all project JS files:
 
 ```bash
-npm i gifted-btns
+while IFS= read -r f; do node -c "$f" || break; done < <(rg --files -g '*.js' -g '!node_modules/**' -g '!.git/**' -g '!session/**' -g '!sessions/**' -g '!temp/**')
 ```
 
-Typical usage:
-
-```js
-const { sendInteractiveMessage } = require('gifted-btns');
-
-await sendInteractiveMessage(sock, extra.from, {
-  text: 'Choose an option:',
-  footer: 'ProBoy‑MD',
-  interactiveButtons: [
-    { name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: 'Option A', id: 'mycmd:a' }) },
-    { name: 'quick_reply', buttonParamsJson: JSON.stringify({ display_text: 'Option B', id: 'mycmd:b' }) }
-  ]
-}, { quoted: msg });
-```
-
-Guidelines:
-- Namespace your button IDs: `mycmd:<state>:<index>`
-- Cache any state you need for button handlers (Map + TTL).
-- Implement `handleButtonResponse(sock, msg, extra)` if your handler routes button clicks.
-
----
-
-## 6) Media Downloading (`ab-downloader`)
-
-Install:
+2. Load critical modules:
 
 ```bash
-npm i ab-downloader
+node -e "require('./handler'); console.log('handler ok')"
+node -e "const {loadCommands}=require('./utils/commandLoader'); console.log(loadCommands().size)"
 ```
 
-Example pattern:
+3. Manual WhatsApp smoke:
+- `.menu`
+- click `DEV`
+- click `BACK`
+- verify `View Channel` button opens
 
-```js
-const { ttdl } = require('ab-downloader');
-const data = await ttdl(url);
-if (!data.status) throw new Error(data.message);
-// use data.result...
-```
-
-Supported downloaders in this repo’s dependency list:
-- `fbdown`, `igdl`, `ttdl`, `twitter`, `youtube`, `mediafire`, `capcut`, `gdrive`, `pinterest`
+4. Permission smoke:
+- one `ownerOnly` command as owner
+- same command from non-owner (must deny)
 
 ---
 
-## 7) Plugin Template (Skeleton Only)
+## 9) Production Rollout Checklist
 
-Create file: `commands/<category>/<name>.js`
+1. Ensure `config.js` owner + bot values are correct.
+2. Ensure `newsletterJid` valid.
+3. Set channel URL (`config.social.channel` recommended).
+4. Confirm `menuButtonsEnabled` desired default in DB.
+5. Restart bot cleanly.
+6. Run smoke tests in private and group chat.
+7. Monitor first 10 minutes logs for button/command errors.
+
+---
+
+## 10) Debugging Playbook
+
+If buttons appear but do nothing:
+1. Check `utils/button.js` ID extraction path.
+2. Confirm `handler.js` passes `commands` in `extra` to button handler.
+3. Confirm clicked ID starts with expected prefixes (`cmd_`, `cmd_menu_cat_`).
+4. Check command exists in `loadCommands()` map.
+5. Check console for `Button command error` lines.
+
+If menu output mixed/simple unexpectedly:
+1. Verify `menuButtonsEnabled` current value.
+2. Verify `.menu <category>` path only used after category selection.
+3. Confirm latest `commands/general/menu.js` is deployed.
+
+---
+
+## 11) AI Generation Constraints
+
+When AI generates new code for this repo, it must:
+- Follow current command contract and folder structure.
+- Keep behavior deterministic and backward-compatible.
+- Avoid breaking button IDs already in use.
+- Use `try/catch` in command execute methods.
+- Return user-friendly errors via `extra.reply`.
+- Avoid silent failures in interactive flows.
+
+---
+
+## 12) Minimal Command Template
 
 ```js
+const config = require('../../config');
+
 module.exports = {
   name: 'example',
   aliases: ['ex'],
   category: 'general',
-  description: 'Short description',
-  usage: '.example <arg>',
-
-  // ownerOnly: true,
-  // modOnly: true,
-  // groupOnly: true,
-  // privateOnly: true,
-  // adminOnly: true,
-  // botAdminNeeded: true,
+  description: 'Example command',
+  usage: `${config.prefix}example <text>`,
 
   async execute(sock, msg, args, extra) {
     try {
-      if (!args.length) return extra.reply(`❌ Usage: ${this.usage}`);
+      if (!args.length) return extra.reply(`Usage: ${this.usage}`);
       await extra.react('⏳');
-
-      // ... your logic
-
-      await extra.reply('✅ Done');
+      await extra.reply(`Done: ${args.join(' ')}`);
       await extra.react('✅');
-    } catch (e) {
-      await extra.reply(`❌ ${e.message}`);
-      await extra.react('❌');
+    } catch (error) {
+      await extra.reply(`❌ ${error.message}`);
     }
   }
 };
 ```
-
----
-
-## 8) Real Examples (Already Working in This Repo)
-
-These commands exist and are good references:
-- TikTok downloader: `commands/media/tiktok.js`
-- Facebook downloader: `commands/media/facebook.js`
-- YouTube downloader: `commands/media/YouTube.js`
-- MediaFire downloader: `commands/media/mediafire.js`
-- CapCut downloader: `commands/media/capcut.js`
-- Google Drive downloader: `commands/media/gdrive.js`
-- Pinterest downloader: `commands/media/pinterest.js`
-
-When building new plugins, follow the same patterns:
-- validate args
-- use `extra.react('⏳')` while processing
-- `try/catch` with user-friendly errors
-- keep button IDs namespaced
-
----
-
-## 9) Setup & Dev Notes
-
-- Start the bot: `npm start`
-- Pairing/session:
-  - Bot supports Session ID format `ProBoy-MD!<base64gzip>`
-  - Bot also supports Pair Code flow (phone number → pairing code printed to terminal)
-- Database files live in: `./database/`
-
----
-
-## 10) AI Output Expectations (When Generating Plugins)
-
-When an AI generates a plugin for this repo, it must:
-- Choose correct folder/category under `commands/`
-- Provide `name`, `category`, and `execute()`
-- Include `usage` and enforce argument checks
-- Use `gifted-btns` for buttons when needed
-- Use `ab-downloader` for supported media sources when needed
-- Be compatible with existing handler/database/config patterns

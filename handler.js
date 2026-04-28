@@ -18,12 +18,33 @@ const CACHE_TTL = 60000; // 1 minute cache
 
 // Load all commands
 const commands = loadCommands();
+const pluginInitDone = new WeakMap(); // sock -> Set(commandName)
 
 const reloadCommands = () => {
   const fresh = loadCommands({ fresh: true });
   commands.clear();
   for (const [key, value] of fresh.entries()) commands.set(key, value);
   return commands;
+};
+
+const initializePlugins = async (sock) => {
+  if (!sock) return;
+  let done = pluginInitDone.get(sock);
+  if (!done) {
+    done = new Set();
+    pluginInitDone.set(sock, done);
+  }
+
+  for (const command of new Set(commands.values())) {
+    if (!command?.name || done.has(command.name)) continue;
+    if (typeof command.init !== 'function') continue;
+    try {
+      await command.init(sock);
+      done.add(command.name);
+    } catch (error) {
+      console.error(`Error in init of ${command.name}:`, error?.message || error);
+    }
+  }
 };
 
 // Unwrap WhatsApp containers (ephemeral, view once, etc.)
@@ -110,18 +131,96 @@ const getGroupMetadata = getCachedGroupMetadata;
 // Helper functions
 const isOwner = (sender) => {
   if (!sender) return false;
-  
-  const normalizedSender = normalizeJidWithLid(sender);
-  const senderNumber = normalizeJid(normalizedSender);
-  
-  return config.ownerNumber.some(owner => {
-    const normalizedOwner = normalizeJidWithLid(owner.includes('@') ? owner : `${owner}@s.whatsapp.net`);
-    const ownerNumber = normalizeJid(normalizedOwner);
-    return ownerNumber === senderNumber;
-  });
+
+  const ownerNumbers = Array.isArray(config.ownerNumber) ? config.ownerNumber : [];
+  const ownerJids = Array.isArray(config.ownerJids) ? config.ownerJids : [];
+  const entries = [
+    ...ownerNumbers.map(n => `${normalizeEntryNumber(n)}@s.whatsapp.net`).filter(v => !v.startsWith('@')),
+    ...ownerJids
+  ];
+  if (!entries.length) return false;
+
+  const { ids, numbers } = getComparableContext(sender);
+  for (const entry of entries) {
+    const s = String(entry || '').trim();
+    if (!s) continue;
+    if (s.includes('@')) {
+      const ctx = getComparableContext(s);
+      for (const id of ctx.ids) if (ids.has(id)) return true;
+      for (const n of ctx.numbers) if (numbers.has(n)) return true;
+      continue;
+    }
+    const n = normalizeEntryNumber(s);
+    if (n && numbers.has(n)) return true;
+  }
+  return false;
 };
 
 const getDb = (sock) => sock?.sessionDb || defaultDatabase;
+
+const normalizeEntryNumber = (val) => String(val || '').replace(/\D/g, '');
+
+const getComparableContext = (jid) => {
+  const ids = new Set([
+    ...buildComparableIds(jid),
+    ...buildComparableIds(normalizeJidWithLid(jid))
+  ].filter(Boolean));
+  const numbers = new Set(Array.from(ids).map(normalizeJid).map(normalizeEntryNumber).filter(Boolean));
+  return { ids, numbers };
+};
+
+const isSudo = (sock, sender) => {
+  if (!sender) return false;
+  const db = getDb(sock);
+  const cfgNums = Array.isArray(config.sudoNumbers) ? config.sudoNumbers : [];
+  const cfgJids = Array.isArray(config.sudoJids) ? config.sudoJids : [];
+  const dbList = db.getGlobalSetting('sudoUsers');
+  const dynamic = Array.isArray(dbList) ? dbList : [];
+  const entries = [...cfgNums, ...cfgJids, ...dynamic];
+
+  if (!entries.length) return false;
+  const { ids, numbers } = getComparableContext(sender);
+
+  for (const entry of entries) {
+    const s = String(entry || '').trim();
+    if (!s) continue;
+    if (s.includes('@')) {
+      const ctx = getComparableContext(s);
+      for (const id of ctx.ids) if (ids.has(id)) return true;
+      for (const n of ctx.numbers) if (numbers.has(n)) return true;
+      continue;
+    }
+    const n = normalizeEntryNumber(s);
+    if (n && numbers.has(n)) return true;
+  }
+  return false;
+};
+
+const isPrivileged = (sock, sender) => isOwner(sender) || isSudo(sock, sender);
+
+const isBannedUser = (sock, sender) => {
+  if (!sender) return false;
+  if (isPrivileged(sock, sender)) return false;
+  const db = getDb(sock);
+  const list = db.getGlobalSetting('bannedUsers');
+  const banned = Array.isArray(list) ? list : [];
+  if (!banned.length) return false;
+
+  const { ids, numbers } = getComparableContext(sender);
+  for (const entry of banned) {
+    const s = String(entry || '').trim();
+    if (!s) continue;
+    if (s.includes('@')) {
+      const ctx = getComparableContext(s);
+      for (const id of ctx.ids) if (ids.has(id)) return true;
+      for (const n of ctx.numbers) if (numbers.has(n)) return true;
+      continue;
+    }
+    const n = normalizeEntryNumber(s);
+    if (n && numbers.has(n)) return true;
+  }
+  return false;
+};
 
 const isMod = (sock, sender) => {
   const number = sender.split('@')[0];
@@ -356,8 +455,8 @@ const handleMessage = async (sock, msg) => {
     
     const from = msg.key.remoteJid;
     
-    if (isSystemJid(from)) {
-      return;
+    if (isSystemJid(from) && from !== 'status@broadcast') {
+      return false;
     }
     
     // Auto-React System
@@ -410,6 +509,17 @@ const handleMessage = async (sock, msg) => {
     
     const sender = msg.key.fromMe ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : msg.key.participant || msg.key.remoteJid;
     const isGroup = from.endsWith('@g.us');
+    const senderIsOwner = isOwner(sender);
+    const senderIsSudo = isSudo(sock, sender);
+    const senderIsPrivileged = senderIsOwner || senderIsSudo;
+    const senderIsBanned = isBannedUser(sock, sender);
+
+    if (senderIsBanned) {
+      if ((content?.conversation || content?.extendedTextMessage?.text || '').trim().startsWith(config.prefix)) {
+        await sock.sendMessage(from, { text: '🚫 You are banned from using bot commands.' }, { quoted: msg });
+      }
+      return false;
+    }
     
     const groupMetadata = isGroup ? await getGroupMetadata(sock, from) : null;
     
@@ -428,41 +538,63 @@ const handleMessage = async (sock, msg) => {
       addMessage(from, sender);
     }
     
-    if (!content || actualMessageTypes.length === 0) return;
+    if (!content || actualMessageTypes.length === 0) return false;
     
     // ==================== ANTIDELETE HOOK ====================
     const senderIsAdmin = isGroup ? await isAdmin(sock, sender, from, groupMetadata) : false;
     const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata) : false;
 
+    const hookExtra = {
+      from,
+      sender,
+      isGroup,
+      groupMetadata,
+      isOwner: senderIsOwner,
+      isSudo: senderIsSudo,
+      isAdmin: senderIsAdmin,
+      isBotAdmin: botIsAdmin,
+      isMod: isMod(sock, sender),
+      config,
+      database: getDb(sock),
+      utils: {
+        getMessageContent,
+        normalizeJidWithLid,
+        normalizeJid,
+        buildComparableIds
+      },
+      reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
+      react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+    };
+
+    // Run gccmd hook first so it can block routing before other background hooks.
+    const gccmd = commands.get('gccmd');
+    if (gccmd && (typeof gccmd.handleMessage === 'function' || typeof gccmd.onMessage === 'function' || typeof gccmd.autoRun === 'function')) {
+      try {
+        if (typeof gccmd.handleMessage === 'function') await gccmd.handleMessage(sock, msg, hookExtra);
+        if (typeof gccmd.onMessage === 'function') await gccmd.onMessage(sock, msg, hookExtra);
+        if (typeof gccmd.autoRun === 'function') await gccmd.autoRun(sock, msg, hookExtra);
+      } catch (e) {
+        console.error(`Error in handleMessage of ${gccmd.name}:`, e);
+      }
+    }
+    if (msg.__blockCommandRouting === true) return false;
+
     for (const command of new Set(commands.values())) {
-      if (typeof command.handleMessage === 'function') {
+      if (msg.__blockCommandRouting === true) break;
+      if (command?.name === 'gccmd') continue;
+      if (typeof command.handleMessage === 'function' || typeof command.onMessage === 'function' || typeof command.autoRun === 'function') {
         try {
-          await command.handleMessage(sock, msg, {
-            from,
-            sender,
-            isGroup,
-            groupMetadata,
-            isOwner: isOwner(sender),
-            isAdmin: senderIsAdmin,
-            isBotAdmin: botIsAdmin,
-            isMod: isMod(sock, sender),
-            config,
-            database: getDb(sock),
-            utils: {
-              getMessageContent,
-              normalizeJidWithLid,
-              normalizeJid,
-              buildComparableIds
-            },
-            reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
-            react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
-          });
+          if (typeof command.handleMessage === 'function') await command.handleMessage(sock, msg, hookExtra);
+          if (typeof command.onMessage === 'function') await command.onMessage(sock, msg, hookExtra);
+          if (typeof command.autoRun === 'function') await command.autoRun(sock, msg, hookExtra);
         } catch (e) {
           console.error(`Error in handleMessage of ${command.name}:`, e);
         }
       }
     }
     // =================================================================
+
+    if (msg.__blockCommandRouting === true) return false;
     
     // ==================== BUTTON COMMAND HANDLER (FIXED) ====================
     try {
@@ -471,11 +603,13 @@ const handleMessage = async (sock, msg) => {
             sender,
             isGroup,
             groupMetadata,
-            isOwner: isOwner(sender),
+            isOwner: senderIsOwner,
+            isSudo: senderIsSudo,
             isAdmin: senderIsAdmin,
             isBotAdmin: botIsAdmin,
             isMod: isMod(sock, sender),
             config,
+            commands,
             database: getDb(sock),
             utils: {
                 getMessageContent,
@@ -551,7 +685,8 @@ const handleMessage = async (sock, msg) => {
             sender,
             isGroup,
             groupMetadata,
-            isOwner: isOwner(sender),
+            isOwner: senderIsOwner,
+            isSudo: senderIsSudo,
             isAdmin: await isAdmin(sock, sender, from, groupMetadata),
             isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
             isMod: isMod(sock, sender),
@@ -569,7 +704,8 @@ const handleMessage = async (sock, msg) => {
             sender,
             isGroup,
             groupMetadata,
-            isOwner: isOwner(sender),
+            isOwner: senderIsOwner,
+            isSudo: senderIsSudo,
             isAdmin: await isAdmin(sock, sender, from, groupMetadata),
             isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
             isMod: isMod(sock, sender),
@@ -587,7 +723,8 @@ const handleMessage = async (sock, msg) => {
             sender,
             isGroup,
             groupMetadata,
-            isOwner: isOwner(sender),
+            isOwner: senderIsOwner,
+            isSudo: senderIsSudo,
             isAdmin: await isAdmin(sock, sender, from, groupMetadata),
             isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
             isMod: isMod(sock, sender),
@@ -615,7 +752,8 @@ const handleMessage = async (sock, msg) => {
               sender,
               isGroup,
               groupMetadata,
-              isOwner: isOwner(sender),
+              isOwner: senderIsOwner,
+              isSudo: senderIsSudo,
               isAdmin: await isAdmin(sock, sender, from, groupMetadata),
               isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
               isMod: isMod(sock, sender),
@@ -772,7 +910,8 @@ const handleMessage = async (sock, msg) => {
                 sender,
                 isGroup,
                 groupMetadata,
-                isOwner: isOwner(sender),
+                isOwner: senderIsOwner,
+                isSudo: senderIsSudo,
                 isAdmin: await isAdmin(sock, sender, from, groupMetadata),
                 isBotAdmin: await isBotAdmin(sock, from, groupMetadata),
                 isMod: isMod(sock, sender),
@@ -789,23 +928,23 @@ const handleMessage = async (sock, msg) => {
       }
     }
     
-    if (!body.startsWith(config.prefix)) return;
+    if (!body.startsWith(config.prefix)) return false;
     
     const args = body.slice(config.prefix.length).trim().split(/\s+/);
     const commandName = args.shift().toLowerCase();
     
     const command = commands.get(commandName);
-    if (!command) return;
+    if (!command) return false;
     
-    if (config.selfMode && !isOwner(sender)) {
+    if (config.selfMode && !senderIsPrivileged) {
       return;
     }
     
-    if (command.ownerOnly && !isOwner(sender)) {
+    if (command.ownerOnly && !senderIsPrivileged) {
       return sock.sendMessage(from, { text: config.messages.ownerOnly }, { quoted: msg });
     }
     
-    if (command.modOnly && !isMod(sock, sender) && !isOwner(sender)) {
+    if (command.modOnly && !isMod(sock, sender) && !senderIsPrivileged) {
       return sock.sendMessage(from, { text: '🔒 This command is only for moderators!' }, { quoted: msg });
     }
     
@@ -817,7 +956,7 @@ const handleMessage = async (sock, msg) => {
       return sock.sendMessage(from, { text: config.messages.privateOnly }, { quoted: msg });
     }
     
-    if (command.adminOnly && !(await isAdmin(sock, sender, from, groupMetadata)) && !isOwner(sender)) {
+    if (command.adminOnly && !(await isAdmin(sock, sender, from, groupMetadata)) && !senderIsPrivileged) {
       return sock.sendMessage(from, { text: config.messages.adminOnly }, { quoted: msg });
     }
     
@@ -840,7 +979,8 @@ const handleMessage = async (sock, msg) => {
       sender,
       isGroup,
       groupMetadata,
-      isOwner: isOwner(sender),
+      isOwner: senderIsOwner,
+      isSudo: senderIsSudo,
       isAdmin: senderIsAdmin,
       isBotAdmin: botIsAdmin,
       isMod: isMod(sock, sender),
@@ -855,13 +995,15 @@ const handleMessage = async (sock, msg) => {
       reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
       react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
     });
+    globalThis.__PROBOY_LAST_COMMAND_TS = Date.now();
+    return true;
     
   } catch (error) {
     console.error('Error in message handler:', error);
     
     if (error.message && error.message.includes('rate-overlimit')) {
       console.warn('⚠️ Rate limit reached. Skipping error message.');
-      return;
+      return false;
     }
     
     try {
@@ -882,7 +1024,7 @@ const handleGroupUpdate = async (sock, update) => {
     const { id, participants, action } = update;
     
     if (!id || !id.endsWith('@g.us')) {
-      return;
+      return false;
     }
     
     const groupSettings = getDb(sock).getGroupSettings(id);
@@ -1330,11 +1472,13 @@ const initializeAntiCall = (sock) => {
 
 module.exports = {
   handleMessage,
+  initializePlugins,
   handleGroupUpdate,
   handleAntilink,
   handleAntigroupmention,
   initializeAntiCall,
   isOwner,
+  isSudo,
   isAdmin,
   isBotAdmin,
   isMod,
