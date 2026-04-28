@@ -5,7 +5,7 @@
  */
 
 const axios = require('axios');
-const { sendInteractiveMessage } = require('gifted-btns');
+const { sendInteractiveMessage } = require('../../utils/button');
 const config = require('../../config');
 
 // User‑agent list for requests
