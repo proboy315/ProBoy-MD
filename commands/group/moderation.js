@@ -71,7 +71,7 @@ module.exports = {
         const reason = args.slice(1).join(' ').trim() || 'No reason';
         const data = database.addWarning(from, target, reason);
         const maxWarnings = config.maxWarnings || 3;
-        const botIsAdmin = await extra.isBotAdmin(sock, from);
+        const botIsAdmin = !!extra.isBotAdmin;
 
         await sock.sendMessage(from, {
           text: `⚠️ Warning for @${target.split('@')[0]}\nReason: ${reason}\nCount: ${data.count}/${maxWarnings}`,
@@ -165,7 +165,7 @@ module.exports = {
       }
 
       // delete muted user's messages if bot admin
-      const botIsAdmin = await extra.isBotAdmin(sock, from);
+      const botIsAdmin = !!extra.isBotAdmin;
       if (!botIsAdmin) return;
       try { await sock.sendMessage(from, { delete: msg.key }); } catch {}
     } catch {
