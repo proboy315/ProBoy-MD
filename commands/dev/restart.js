@@ -2,7 +2,28 @@
  * Restart Command - Restart bot (Owner Only)
  */
 
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
+
+function run(cmd) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, (error, stdout, stderr) => {
+      if (error) reject(error);
+      else resolve(stdout || stderr);
+    });
+  });
+}
+
+function restartWithCurrentRuntime() {
+  const nodeBin = process.argv[0];
+  const args = process.argv.slice(1);
+  const child = spawn(nodeBin, args, {
+    cwd: process.cwd(),
+    detached: true,
+    stdio: 'ignore',
+    env: process.env
+  });
+  child.unref();
+}
 
 module.exports = {
   name: 'restart',
@@ -16,23 +37,19 @@ module.exports = {
     try {
       await extra.reply('🔁 Restarting bot...');
 
-      const run = (cmd) =>
-        new Promise((resolve, reject) => {
-          exec(cmd, (error, stdout, stderr) => {
-            if (error) reject(error);
-            else resolve(stdout || stderr);
-          });
-        });
-
       try {
-        // If running under PM2, this will restart it
+        if (process.env.pm_id !== undefined || process.env.PM2_HOME) {
+          await run('pm2 restart all');
+          return;
+        }
+        await run('pm2 ping');
         await run('pm2 restart all');
         return;
       } catch (e) {
-        console.log('PM2 not available, falling back to process.exit');
+        console.log('PM2 not available, relaunching with current Node runtime');
       }
 
-      // For panels & nodemon – they usually restart on exit
+      restartWithCurrentRuntime();
       setTimeout(() => {
         process.exit(0);
       }, 500);

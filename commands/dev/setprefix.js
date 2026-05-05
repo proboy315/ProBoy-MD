@@ -32,7 +32,7 @@ module.exports = {
       // Update config file
       const configPath = path.join(__dirname, '../../config.js');
       let configContent = fs.readFileSync(configPath, 'utf-8');
-      configContent = configContent.replace(/prefix: '.*'/, `prefix: '${newPrefix}'`);
+      configContent = configContent.replace(/prefix:\s*['"][^'"]*['"]/, `prefix: "${newPrefix}"`);
       fs.writeFileSync(configPath, configContent);
       
       await extra.reply(`✅ Prefix changed to: ${newPrefix}\n\nNew command format: ${newPrefix}command`);
