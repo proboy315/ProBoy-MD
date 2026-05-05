@@ -5,7 +5,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const JavaScriptObfuscator = require('javascript-obfuscator');
 const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const { tmpdir } = require('os');
 
@@ -56,6 +55,13 @@ module.exports = {
         await reply('🔐 Obfuscating... This may take a moment.');
 
         try {
+            let JavaScriptObfuscator;
+            try {
+                JavaScriptObfuscator = require('javascript-obfuscator');
+            } catch {
+                return reply('❌ `javascript-obfuscator` is not installed. Run `npm install` to enable this command.');
+            }
+
             let originalCode = fs.readFileSync(inputPath, 'utf8');
 
             // Replace dummy "Shahan" placeholders with actual bot name
