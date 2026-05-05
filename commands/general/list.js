@@ -7,6 +7,25 @@ const path = require('path');
 const config = require('../../config');
 const { loadCommands } = require('../../utils/commandLoader');
 const ui = require('../../utils/ui');
+const MAX_CAPTION_LENGTH = 900;
+const MAX_TEXT_CHUNK = 3500;
+
+const chunkText = (text, max = MAX_TEXT_CHUNK) => {
+  const input = String(text || '');
+  if (input.length <= max) return [input];
+
+  const chunks = [];
+  let remaining = input;
+  while (remaining.length > max) {
+    let slice = remaining.slice(0, max);
+    const breakAt = Math.max(slice.lastIndexOf('\n'), slice.lastIndexOf(' '));
+    if (breakAt > 500) slice = slice.slice(0, breakAt);
+    chunks.push(slice.trim());
+    remaining = remaining.slice(slice.length).trimStart();
+  }
+  if (remaining) chunks.push(remaining);
+  return chunks;
+};
 
 module.exports = {
   name: 'list',
@@ -67,7 +86,7 @@ module.exports = {
       // Try to send with bot image (like menu.js)
       const imagePath = path.join(__dirname, '../../utils/bot_image.jpg');
       
-      if (fs.existsSync(imagePath)) {
+      if (fs.existsSync(imagePath) && menuText.length <= MAX_CAPTION_LENGTH) {
         const imageBuffer = fs.readFileSync(imagePath);
         await sock.sendMessage(extra.from, {
           image: imageBuffer,
@@ -84,10 +103,13 @@ module.exports = {
           }
         }, { quoted: msg });
       } else {
-        await sock.sendMessage(extra.from, {
-          text: menuText,
-          mentions: [extra.sender]
-        }, { quoted: msg });
+        const chunks = chunkText(menuText);
+        for (let i = 0; i < chunks.length; i++) {
+          await sock.sendMessage(extra.from, {
+            text: chunks[i],
+            mentions: [extra.sender]
+          }, { quoted: i === 0 ? msg : null });
+        }
       }
       
     } catch (error) {

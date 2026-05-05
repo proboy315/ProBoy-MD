@@ -5,10 +5,9 @@
  * deletes them "for everyone".
  *
  * Simplified per owner request:
- * - Status deletes always go to bot's own number.
- * - Command: .antidelete on/off/status/chat/jid/bot
+ * - Command: .antidelete on/off/status/chat/jid/bot/<custom jid>
  * - Thumbnail links to social.website from config.
- * - Header shows "From: <group/contact name>" instead of raw JID.
+ * - Header shows readable names instead of raw JIDs.
  */
 
 const { downloadMediaMessage, jidDecode, jidEncode } = require('@whiskeysockets/baileys');
@@ -24,7 +23,7 @@ const CONFIG_PATH = path.join(__dirname, '..', '..', 'config.js');
 
 const CACHE_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours (records)
 const MAX_RECORDS = 2000;
-const MEDIA_TTL_MS = Math.max(30 * 60 * 1000, Number(process.env.ANTIDELETE_MEDIA_TTL_MS || 12 * 60 * 60 * 1000)); // default 12h
+const MEDIA_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.ANTIDELETE_MEDIA_TTL_MS || 2 * 60 * 60 * 1000)); // default 2h
 const MAX_MEDIA_TOTAL_BYTES = Math.max(20 * 1024 * 1024, Number(process.env.ANTIDELETE_MAX_MEDIA_BYTES || 250 * 1024 * 1024)); // default 250MB
 const MAX_SINGLE_MEDIA_BYTES = Math.max(512 * 1024, Number(process.env.ANTIDELETE_MAX_FILE_BYTES || 15 * 1024 * 1024)); // default 15MB
 
@@ -107,6 +106,7 @@ const getConfigDefaults = () => {
   return {
     enabled: typeof settings.enabled === 'boolean' ? settings.enabled : fallbackEnabled,
     dest: typeof settings.dest === 'string' && settings.dest.trim() ? settings.dest.trim() : 'chat',
+    statusDest: typeof settings.statusDest === 'string' && settings.statusDest.trim() ? settings.statusDest.trim() : 'bot',
     bannerImageUrl: typeof settings.bannerImageUrl === 'string' ? settings.bannerImageUrl.trim() : ''
   };
 };
@@ -117,6 +117,7 @@ const upsertAntideleteSettingsInConfig = (newSettings) => {
     const normalized = {
       enabled: !!newSettings.enabled,
       dest: String(newSettings.dest || 'chat'),
+      statusDest: String(newSettings.statusDest || 'bot'),
       bannerImageUrl: String(newSettings.bannerImageUrl || '')
     };
 
@@ -124,6 +125,7 @@ const upsertAntideleteSettingsInConfig = (newSettings) => {
       `    antideleteSettings: {\n` +
       `      enabled: ${normalized.enabled},\n` +
       `      dest: '${normalized.dest.replace(/'/g, "\\'")}',\n` +
+      `      statusDest: '${normalized.statusDest.replace(/'/g, "\\'")}',\n` +
       `      bannerImageUrl: '${normalized.bannerImageUrl.replace(/'/g, "\\'")}'\n` +
       `    },\n`;
 
@@ -260,6 +262,15 @@ const toPlainJid = (jid) => {
   return n ? `${n}@s.whatsapp.net` : null;
 };
 
+const normalizeDestinationJid = (input) => {
+  const raw = String(input || '').trim();
+  if (!raw) return null;
+  if (raw === 'chat' || raw === 'bot' || raw === 'owner') return raw;
+  if (raw.includes('@')) return raw;
+  const digits = raw.replace(/\D/g, '');
+  return digits ? `${digits}@s.whatsapp.net` : null;
+};
+
 // Get chat name (group subject or contact name)
 const getChatName = async (sock, jid) => {
   if (jid === 'status@broadcast') return 'Status Broadcast';
@@ -390,9 +401,10 @@ setInterval(() => {
 }, 60 * 1000);
 
 // Keep media folder from growing forever
+cleanupMediaDir();
 setInterval(() => {
   cleanupMediaDir();
-}, 10 * 60 * 1000);
+}, 5 * 60 * 1000);
 
 module.exports = {
   name: 'antidelete',
@@ -426,40 +438,40 @@ module.exports = {
       else if (subCmd === 'chat') {
         database.setGlobalSetting('antideleteDest', 'chat');
         const defaults = getConfigDefaults();
-        upsertAntideleteSettingsInConfig({ ...defaults, dest: 'chat' });
-        await reply('✅ Recovery destination set to: original chat.');
+        upsertAntideleteSettingsInConfig({ ...defaults, dest: 'chat', statusDest: defaults.statusDest || 'bot' });
+        await reply('✅ Message recovery destination set to: original chat.\nStatuses will use the configured status destination.');
       } 
       else if (subCmd === 'bot') {
         database.setGlobalSetting('antideleteDest', 'bot');
+        database.setGlobalSetting('antideleteStatusDest', 'bot');
         const defaults = getConfigDefaults();
-        upsertAntideleteSettingsInConfig({ ...defaults, dest: 'bot' });
-        await reply('✅ Recovery destination set to: bot number.');
+        upsertAntideleteSettingsInConfig({ ...defaults, dest: 'bot', statusDest: 'bot' });
+        await reply('✅ Recovery destination set to: bot number for messages and statuses.');
       } 
-      else if (subCmd === 'jid') {
-        const jid = args[1] ? args[1].trim() : '';
-        if (!jid) return reply('❌ Please provide a JID.\nExample: .antidelete jid 1234567890@s.whatsapp.net');
-        let normalized = jid;
-        if (!jid.includes('@')) normalized = `${jid}@s.whatsapp.net`;
-        if (!normalized.endsWith('@s.whatsapp.net') && !normalized.endsWith('@g.us')) {
-          return reply('❌ Invalid JID. Use e.g. 1234567890@s.whatsapp.net');
+      else if (subCmd === 'jid' || (subCmd && subCmd.includes('@'))) {
+        const jid = subCmd === 'jid' ? (args[1] ? args[1].trim() : '') : subCmd;
+        const normalized = normalizeDestinationJid(jid);
+        if (!normalized || normalized === 'chat' || normalized === 'bot' || normalized === 'owner') {
+          return reply('❌ Invalid JID. Example: `.antidelete jid 22222@lid` or `.antidelete 1234567890@s.whatsapp.net`');
         }
         database.setGlobalSetting('antideleteDest', normalized);
+        database.setGlobalSetting('antideleteStatusDest', normalized);
         const defaults = getConfigDefaults();
-        upsertAntideleteSettingsInConfig({ ...defaults, dest: normalized });
-        await reply(`✅ Recovery destination set to: ${normalized}`);
+        upsertAntideleteSettingsInConfig({ ...defaults, dest: normalized, statusDest: normalized });
+        await reply(`✅ Antidelete target set to: ${normalized}\nAll deleted messages and statuses will be sent there.`);
       } 
       else if (subCmd === 'status') {
         const defaults = getConfigDefaults();
         const enabled = database.getGlobalSetting('antidelete');
         const effectiveEnabled = enabled === undefined ? defaults.enabled : !!enabled;
         const dest = database.getGlobalSetting('antideleteDest') || defaults.dest;
+        const statusDest = database.getGlobalSetting('antideleteStatusDest') || defaults.statusDest || dest;
         const banner = database.getGlobalSetting('antideleteBannerImageUrl') || defaults.bannerImageUrl;
-        const botJid = sock.user?.id || 'unknown';
         await reply(
           `📊 *Antidelete Status*\n\n` +
           `Enabled: ${effectiveEnabled ? '✅' : '❌'}\n` +
-          `Recover to: ${dest} (non-status)\n` +
-          `Status always goes to: ${botJid}\n` +
+          `Message destination: ${dest}\n` +
+          `Status destination: ${statusDest}\n` +
           `Banner: ${banner ? '✅ set' : '❌ none'}\n` +
           `Cache: ${messageCache.size} items`
         );
@@ -472,7 +484,8 @@ module.exports = {
           `.antidelete status\n` +
           `.antidelete chat      (send to original chat)\n` +
           `.antidelete bot       (send to bot number)\n` +
-          `.antidelete jid <jid> (send to custom JID)\n`
+          `.antidelete jid <jid> (send all deletes to custom JID)\n` +
+          `.antidelete 22222@lid   (direct custom target)\n`
         );
       }
 
@@ -599,25 +612,26 @@ module.exports = {
 
     // Determine destination
     const destSetting = database.getGlobalSetting('antideleteDest') || defaults.dest;
+    const statusDestSetting = database.getGlobalSetting('antideleteStatusDest') || defaults.statusDest || destSetting;
     const botJid = toPlainJid(sock.user?.id) || normalizeJidWithLid(sock.user?.id); // bot's own number
 
     let targetJid;
     if (chatJid === 'status@broadcast') {
-      // Status deletes always go to bot's own number
-      targetJid = botJid;
+      targetJid = (statusDestSetting === 'chat' || statusDestSetting === 'bot' || statusDestSetting === 'owner') ? botJid : statusDestSetting;
     } else {
       if (destSetting === 'chat') {
         targetJid = chatJid;
-      } else if (destSetting === 'bot') {
+      } else if (destSetting === 'bot' || destSetting === 'owner') {
         targetJid = botJid;
       } else {
-        // Assume it's a JID string
         targetJid = destSetting;
       }
     }
 
     if (!targetJid) return;
-    targetJid = normalizeJidWithLid(targetJid);
+    if (!String(targetJid).endsWith('@lid') && !String(targetJid).endsWith('@hosted.lid')) {
+      targetJid = normalizeJidWithLid(targetJid);
+    }
 
     // Build mentions
     const mentions = [];
@@ -630,15 +644,17 @@ module.exports = {
     const deleterNum = deleter ? (jidToNumber(deleter) || senderNum) : senderNum;
     const senderName = sender ? getContactName(sock, sender) : '';
     const deleterName = deleter ? getContactName(sock, deleter) : '';
-
-    // Get chat name for display
     const chatName = await getChatName(sock, chatJid);
+    const sourceLabel = chatJid === 'status@broadcast' ? 'Status' : 'Message';
+    const senderLabel = senderName || senderNum;
+    const deleterLabel = deleterName || deleterNum;
 
     const headerLines = [];
-    headerLines.push('*ANTIDELETE*');
-    headerLines.push(`🗑️ Deleted by: @${deleterNum}${deleterName ? ` (${deleterName})` : ''}`);
-    headerLines.push(`👤 Sender: @${senderNum}${senderName ? ` (${senderName})` : ''}`);
-    headerLines.push(`📌 From: ${chatName}`);
+    headerLines.push('*ANTIDELETE DETECTED*');
+    headerLines.push(`Type: ${sourceLabel}`);
+    headerLines.push(`From: ${chatName}`);
+    headerLines.push(`Sender: ${senderLabel} (@${senderNum})`);
+    headerLines.push(`Deleted By: ${deleterLabel} (@${deleterNum})`);
 
     const baseCaption = headerLines.join('\n');
     const contextInfo = buildBannerContextInfo(sock, deleter, sender);
