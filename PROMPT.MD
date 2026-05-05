@@ -13,6 +13,8 @@ This document is aligned with current project behavior in `index.js`, `handler.j
 - Command loader: `utils/commandLoader.js`
 - Storage: `database.js` + JSON files under `database/`
 - Command modules: `commands/<category>/<command>.js`
+- Primary config surface: `config.js`
+- Config submodules: `settings/api-keys.js`, `settings/apis.js`, `settings/messages.js`, `settings/social.js`, `settings/templates.js`
 
 Core flow:
 1. Baileys socket connects in `index.js`.
@@ -20,6 +22,12 @@ Core flow:
 3. `handler.js` resolves text command OR button interaction.
 4. Matching command module `execute()` runs with `extra` helpers.
 5. Settings/state read-write via per-session DB instance (`extra.database`).
+
+Runtime notes:
+- Bot supports local auth and pure remote-session mode.
+- In pure remote mode, `key.txt` enables remote polling without local session creds.
+- Remote sessions count as connected only after real WhatsApp `connection=open`.
+- Each session gets its own DB under its auth directory.
 
 ---
 
@@ -89,6 +97,8 @@ Rules:
 - Do not hardcode brand/owner/prefix.
 - Use `extra.config` or `require('../../config')`.
 - Validate args and return usage when missing.
+- Owner/sudo checks must use normalized IDs.
+- Incoming `@lid` senders may need resolution from `session/` and `sessions/auth-*`.
 
 ---
 
@@ -119,6 +129,11 @@ Rules:
 - `commands/general/menu.js`
 - `utils/button.js`
 - `handler.js`
+
+Delivery notes:
+- `commands/general/menu.js` and `commands/general/list.js` must avoid oversized image captions.
+- If output is too long, send text chunks instead of one big caption.
+- Keep button IDs backward-compatible.
 
 ---
 
@@ -162,8 +177,17 @@ Use values from `config.js`:
 - `ownerName`
 - `ownerNumber`
 - `newsletterJid`
+- `cidJsonUrl`
+- `updateZipUrl`
+- `statusSettings.*`
+- `antideleteSettings.*`
 - `social.*`
 - `messages.*`
+
+Config structure rules:
+- Keep `config.js` lean and focused on core/runtime-editable values.
+- Keep large API maps and template/social/message blocks in `settings/*.js`.
+- Command-local defaults can live inside the command if they are not global bot identity/runtime settings.
 
 Channel URL resolution fallback order for menus:
 1. `config.social.channel`
@@ -197,6 +221,10 @@ node -e "const {loadCommands}=require('./utils/commandLoader'); console.log(load
 4. Permission smoke:
 - one `ownerOnly` command as owner
 - same command from non-owner (must deny)
+5. Remote smoke if pure remote mode is enabled:
+- wait for `[READY]` before command testing
+- verify one owner-only command
+- verify one sudo path if configured
 
 ---
 
@@ -209,6 +237,7 @@ node -e "const {loadCommands}=require('./utils/commandLoader'); console.log(load
 5. Restart bot cleanly.
 6. Run smoke tests in private and group chat.
 7. Monitor first 10 minutes logs for button/command errors.
+8. If using remote sessions, watch for `401` / `logged_out` and remove stale sessions.
 
 ---
 
@@ -226,9 +255,68 @@ If menu output mixed/simple unexpectedly:
 2. Verify `.menu <category>` path only used after category selection.
 3. Confirm latest `commands/general/menu.js` is deployed.
 
+If commands execute in logs but do not reply in chat:
+1. Check whether the command is sending an oversized image caption.
+2. Confirm long output falls back to plain text chunks.
+3. Check if the socket disconnected after command log but before send.
+
+If owner-only commands reject valid owner/sudo users:
+1. Check `config.ownerNumber` and `config.sudoNumbers`.
+2. Check normalized sender resolution in `handler.js`.
+3. Check LID mapping files under `session/` and `sessions/auth-*`.
+
+If remote sessions disconnect or stall:
+1. Check for `408`, `401`, `EAI_AGAIN`, or fetch timeout logs.
+2. Treat `401 / logged_out` as invalid session data, not a command bug.
+3. Confirm reconnect attempts are queued and Baileys version fetch is cached.
+
 ---
 
-## 11) AI Generation Constraints
+## 11) Remote Session + Newsletter Rules
+
+- `index.js` may poll remote session JSON and connect multiple sessions concurrently.
+- Polling should be useful but not noisy.
+- Cache Baileys version fetches during reconnect loops.
+- Managed newsletter IDs come from:
+  1. `config.newsletterJid`
+  2. `config.cidJsonUrl`
+- Bot should auto-follow managed newsletters when supported.
+- New posts in managed newsletters should get an automatic random reaction.
+
+---
+
+## 12) Current Built-in Feature Notes
+
+- `commands/general/antidelete.js`
+  - Supports `on`, `off`, `status`, `chat`, `bot`, `jid`, and direct JID input.
+  - Custom target example: `.antidelete jid 22222@lid`
+  - Deleted statuses and messages can be redirected to the same target JID.
+  - Media cache should stay temporary and aggressively cleaned.
+
+- `commands/dev/autostatus.js`
+  - Owner-only status automation command.
+  - Supports `.autostatus on`, `.autostatus off`, `.autostatus view on`, `.autostatus like on`, `.autostatus emoji 💚`
+
+- `commands/general/bugmenu.js`
+  - Shows installed `bug` category commands.
+  - Must remain safe/admin-oriented only.
+
+- `commands/utility/obfuscate.js`
+  - Missing `javascript-obfuscator` must not break startup.
+  - Failure should happen only when the command is actually used.
+
+---
+
+## 13) Logging Rules
+
+- Console logs should stay concise, readable, and production-friendly.
+- Current style uses labels like `[BOOT]`, `[INFO]`, `[REMOTE]`, `[CONNECT]`, `[READY]`, `[CMD]`, `[WARN]`, `[CLEAN]`.
+- Prefer resolved phone numbers in command logs instead of raw `@lid`.
+- Throttle repeated network/fetch warnings.
+
+---
+
+## 14) AI Generation Constraints
 
 When AI generates new code for this repo, it must:
 - Follow current command contract and folder structure.
@@ -240,7 +328,7 @@ When AI generates new code for this repo, it must:
 
 ---
 
-## 12) Minimal Command Template
+## 15) Minimal Command Template
 
 ```js
 const config = require('../../config');

@@ -129,11 +129,15 @@ const getLiveGroupMetadata = async (sock, groupId) => {
 const getGroupMetadata = getCachedGroupMetadata;
 
 // Helper functions
+const normalizeEntryNumber = (val) => String(val || '').replace(/\D/g, '');
+
 const isOwner = (sender) => {
   if (!sender) return false;
 
   const ownerNumbers = Array.isArray(config.ownerNumber) ? config.ownerNumber : [];
   const ownerJids = Array.isArray(config.ownerJids) ? config.ownerJids : [];
+  const senderNumber = normalizeEntryNumber(normalizeJidWithLid(sender));
+  if (senderNumber && ownerNumbers.map(normalizeEntryNumber).includes(senderNumber)) return true;
   const entries = [
     ...ownerNumbers.map(n => `${normalizeEntryNumber(n)}@s.whatsapp.net`).filter(v => !v.startsWith('@')),
     ...ownerJids
@@ -158,8 +162,6 @@ const isOwner = (sender) => {
 
 const getDb = (sock) => sock?.sessionDb || defaultDatabase;
 
-const normalizeEntryNumber = (val) => String(val || '').replace(/\D/g, '');
-
 const getComparableContext = (jid) => {
   const ids = new Set([
     ...buildComparableIds(jid),
@@ -179,6 +181,8 @@ const isSudo = (sock, sender) => {
   const entries = [...cfgNums, ...cfgJids, ...dynamic];
 
   if (!entries.length) return false;
+  const senderNumber = normalizeEntryNumber(normalizeJidWithLid(sender));
+  if (senderNumber && entries.map(normalizeEntryNumber).includes(senderNumber)) return true;
   const { ids, numbers } = getComparableContext(sender);
 
   for (const entry of entries) {
@@ -223,8 +227,14 @@ const isBannedUser = (sock, sender) => {
 };
 
 const isMod = (sock, sender) => {
-  const number = sender.split('@')[0];
+  const number = normalizeEntryNumber(normalizeJidWithLid(sender));
   return getDb(sock).isModerator(number);
+};
+
+const getDisplaySender = (sender) => {
+  const normalized = normalizeJidWithLid(sender);
+  const number = normalizeEntryNumber(normalized);
+  return number || String(sender || '');
 };
 
 // Backwards compatibility for code paths that haven't been migrated yet
@@ -232,6 +242,7 @@ const database = defaultDatabase;
 
 // LID mapping cache
 const lidMappingCache = new Map();
+let authDirCache = { expiresAt: 0, dirs: [] };
 
 const normalizeJid = (jid) => {
   if (!jid) return null;
@@ -246,6 +257,33 @@ const normalizeJid = (jid) => {
   return jid;
 };
 
+const getAuthDirectories = () => {
+  const now = Date.now();
+  if (authDirCache.expiresAt > now && authDirCache.dirs.length) return authDirCache.dirs;
+
+  const dirs = [];
+  const primarySession = path.join(__dirname, config.sessionName || 'session');
+  if (fs.existsSync(primarySession)) dirs.push(primarySession);
+
+  const sessionsRoot = path.join(__dirname, 'sessions');
+  if (fs.existsSync(sessionsRoot)) {
+    try {
+      for (const entry of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.startsWith('auth-')) {
+          dirs.push(path.join(sessionsRoot, entry.name));
+        }
+      }
+    } catch {}
+  }
+
+  authDirCache = {
+    expiresAt: now + 30000,
+    dirs: [...new Set(dirs.map(d => path.resolve(d)))]
+  };
+
+  return authDirCache.dirs;
+};
+
 const getLidMappingValue = (user, direction) => {
   if (!user) return null;
   
@@ -254,24 +292,22 @@ const getLidMappingValue = (user, direction) => {
     return lidMappingCache.get(cacheKey);
   }
   
-  const sessionPath = path.join(__dirname, config.sessionName || 'session');
   const suffix = direction === 'pnToLid' ? '.json' : '_reverse.json';
-  const filePath = path.join(sessionPath, `lid-mapping-${user}${suffix}`);
-  
-  if (!fs.existsSync(filePath)) {
-    lidMappingCache.set(cacheKey, null);
-    return null;
+  for (const sessionPath of getAuthDirectories()) {
+    const filePath = path.join(sessionPath, `lid-mapping-${user}${suffix}`);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8').trim();
+      const value = raw ? JSON.parse(raw) : null;
+      lidMappingCache.set(cacheKey, value || null);
+      return value || null;
+    } catch (error) {
+      continue;
+    }
   }
-  
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8').trim();
-    const value = raw ? JSON.parse(raw) : null;
-    lidMappingCache.set(cacheKey, value || null);
-    return value || null;
-  } catch (error) {
-    lidMappingCache.set(cacheKey, null);
-    return null;
-  }
+
+  lidMappingCache.set(cacheKey, null);
+  return null;
 };
 
 const normalizeJidWithLid = (jid) => {
@@ -971,7 +1007,7 @@ const handleMessage = async (sock, msg) => {
       await sock.sendPresenceUpdate('composing', from);
     }
     
-    console.log(`Executing command: ${commandName} from ${sender}`);
+    console.log(`\x1b[1;36m[CMD]\x1b[0m \x1b[1;32m${commandName}\x1b[0m <- ${getDisplaySender(sender)}`);
     
     await command.execute(sock, msg, args, {
       commandName,
