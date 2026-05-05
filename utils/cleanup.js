@@ -89,7 +89,7 @@ function cleanupOldFiles() {
  */
 function startCleanup() {
   // Run cleanup immediately at startup
-  console.log('🧹 Starting temp file cleanup system...');
+  console.log('\x1b[1;36m[CLEAN]\x1b[0m Starting temp file cleanup system...');
   cleanupOldFiles();
   
   // Set up periodic cleanup
@@ -97,7 +97,7 @@ function startCleanup() {
     cleanupOldFiles();
   }, CLEANUP_INTERVAL_MS);
   
-  console.log(`✅ Cleanup system started (runs every ${CLEANUP_INTERVAL_MS / 1000 / 60} minutes)`);
+  console.log(`\x1b[1;32m[CLEAN]\x1b[0m Cleanup system started (runs every ${CLEANUP_INTERVAL_MS / 1000 / 60} minutes)`);
 }
 
 /**
@@ -127,4 +127,3 @@ module.exports = {
   startCleanup,
   stopCleanup
 };
-

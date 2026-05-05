@@ -3,6 +3,8 @@
  */
 
 const axios = require('axios');
+const http = require('http');
+const https = require('https');
 const config = require('../config');
 
 const getApi = (path) => {
@@ -12,6 +14,8 @@ const getApi = (path) => {
 
 const api = axios.create({
   timeout: 30000,
+  httpAgent: new http.Agent({ keepAlive: true, maxSockets: 25 }),
+  httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 25 }),
   headers: {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
   }

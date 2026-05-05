@@ -164,10 +164,15 @@ const updateViaZip = async (zipUrl, opts = {}) => {
     'node_modules',
     '.git',
     'session',
+    'sessions',
     'tmp',
     'temp',
     'database',
-    'config.js'
+    'config.js',
+    'bot.txt',
+    'key.txt',
+    'session.txt',
+    'utils/bot_image.jpg'
   ];
 
   const out = { updated: [], added: [], skipped: [] };
