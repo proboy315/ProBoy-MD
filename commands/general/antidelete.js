@@ -1,13 +1,7 @@
 /**
- * Antidelete Plugin for ProBoy‑MD
- *
- * Stores incoming messages (including media) so they can be re-sent if a user
- * deletes them "for everyone".
- *
- * Simplified per owner request:
- * - Command: .antidelete on/off/status/chat/jid/bot/<custom jid>
- * - Thumbnail links to social.website from config.
- * - Header shows readable names instead of raw JIDs.
+ * Antidelete Plugin for ProBoy‑MD – LID Fix Edition
+ * Uses exact normalizeJidWithLid logic from handler.js (local copy)
+ * to convert LID numbers into real phone numbers.
  */
 
 const { downloadMediaMessage, jidDecode, jidEncode } = require('@whiskeysockets/baileys');
@@ -21,40 +15,33 @@ const CACHE_FILE = path.join(DB_DIR, 'antidelete_cache_v2.json');
 const MEDIA_DIR = path.join(DB_DIR, 'antidelete_media');
 const CONFIG_PATH = path.join(__dirname, '..', '..', 'config.js');
 
-const CACHE_TTL_MS = 48 * 60 * 60 * 1000; // 48 hours (records)
+const CACHE_TTL_MS = 48 * 60 * 60 * 1000;
 const MAX_RECORDS = 2000;
-const MEDIA_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.ANTIDELETE_MEDIA_TTL_MS || 2 * 60 * 60 * 1000)); // default 2h
-const MAX_MEDIA_TOTAL_BYTES = Math.max(20 * 1024 * 1024, Number(process.env.ANTIDELETE_MAX_MEDIA_BYTES || 250 * 1024 * 1024)); // default 250MB
-const MAX_SINGLE_MEDIA_BYTES = Math.max(512 * 1024, Number(process.env.ANTIDELETE_MAX_FILE_BYTES || 15 * 1024 * 1024)); // default 15MB
+const MEDIA_TTL_MS = Math.max(15 * 60 * 1000, Number(process.env.ANTIDELETE_MEDIA_TTL_MS || 2 * 60 * 60 * 1000));
+const MAX_MEDIA_TOTAL_BYTES = Math.max(20 * 1024 * 1024, Number(process.env.ANTIDELETE_MAX_MEDIA_BYTES || 250 * 1024 * 1024));
+const MAX_SINGLE_MEDIA_BYTES = Math.max(512 * 1024, Number(process.env.ANTIDELETE_MAX_FILE_BYTES || 15 * 1024 * 1024));
 
 const getDb = (sock, extra) => extra?.database || sock?.sessionDb || defaultDatabase;
 
-// Ensure directories exist
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 if (!fs.existsSync(MEDIA_DIR)) fs.mkdirSync(MEDIA_DIR, { recursive: true });
 
-let messageCache = new Map(); // key -> record
-const processedDeletes = new Map(); // deleteKey -> timestamp (dedupe)
+let messageCache = new Map();
+const processedDeletes = new Map();
 
 const cacheKey = (remoteJid, id) => `${remoteJid || 'unknown'}|${id || 'unknown'}`;
 
 const findCachedRecord = (remoteJid, id) => {
   if (!id) return null;
-
   if (remoteJid) {
     const directKey = cacheKey(remoteJid, id);
     const direct = messageCache.get(directKey);
     if (direct) return { mapKey: directKey, record: direct };
   }
-
-  // Fallback: match by message id only
   const suffix = `|${id}`;
   for (const [k, v] of messageCache.entries()) {
-    if (typeof k === 'string' && k.endsWith(suffix)) {
-      return { mapKey: k, record: v };
-    }
+    if (typeof k === 'string' && k.endsWith(suffix)) return { mapKey: k, record: v };
   }
-
   return null;
 };
 
@@ -62,20 +49,12 @@ const safeReadJson = (filePath) => {
   try {
     if (!fs.existsSync(filePath)) return null;
     const raw = fs.readFileSync(filePath, 'utf8');
-    const parsed = raw ? JSON.parse(raw) : null;
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch {
-    return null;
-  }
+    return raw ? JSON.parse(raw) : null;
+  } catch { return null; }
 };
 
 const safeWriteJson = (filePath, data) => {
-  try {
-    fs.writeFileSync(filePath, JSON.stringify(data, null, 2));
-    return true;
-  } catch {
-    return false;
-  }
+  try { fs.writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch {}
 };
 
 const getMessageContent = (msg) => {
@@ -92,22 +71,17 @@ const getFirstMessageType = (content) => {
   if (!content) return null;
   const keys = Object.keys(content);
   const protocolMessages = ['protocolMessage', 'senderKeyDistributionMessage', 'messageContextInfo'];
-  const actual = keys.filter(k => !protocolMessages.includes(k));
-  return actual[0] || null;
+  return keys.filter(k => !protocolMessages.includes(k))[0] || null;
 };
 
 const getConfigDefaults = () => {
   const settings = config.antideleteSettings || {};
-  const fallbackEnabled =
-    typeof config.defaultGroupSettings?.antidelete === 'boolean'
-      ? config.defaultGroupSettings.antidelete
-      : true;
-
+  const fallbackEnabled = typeof config.defaultGroupSettings?.antidelete === 'boolean' ? config.defaultGroupSettings.antidelete : true;
   return {
     enabled: typeof settings.enabled === 'boolean' ? settings.enabled : fallbackEnabled,
-    dest: typeof settings.dest === 'string' && settings.dest.trim() ? settings.dest.trim() : 'chat',
-    statusDest: typeof settings.statusDest === 'string' && settings.statusDest.trim() ? settings.statusDest.trim() : 'bot',
-    bannerImageUrl: typeof settings.bannerImageUrl === 'string' ? settings.bannerImageUrl.trim() : ''
+    dest: settings.dest || 'chat',
+    statusDest: settings.statusDest || 'bot',
+    bannerImageUrl: settings.bannerImageUrl || ''
   };
 };
 
@@ -120,115 +94,144 @@ const upsertAntideleteSettingsInConfig = (newSettings) => {
       statusDest: String(newSettings.statusDest || 'bot'),
       bannerImageUrl: String(newSettings.bannerImageUrl || '')
     };
-
-    const block =
-      `    antideleteSettings: {\n` +
+    const block = `    antideleteSettings: {\n` +
       `      enabled: ${normalized.enabled},\n` +
       `      dest: '${normalized.dest.replace(/'/g, "\\'")}',\n` +
       `      statusDest: '${normalized.statusDest.replace(/'/g, "\\'")}',\n` +
       `      bannerImageUrl: '${normalized.bannerImageUrl.replace(/'/g, "\\'")}'\n` +
       `    },\n`;
-
     let updated = current;
     const existingBlockRegex = /(^\s*antideleteSettings\s*:\s*\{[\s\S]*?\}\s*,\s*$)/m;
-
     if (existingBlockRegex.test(updated)) {
       updated = updated.replace(existingBlockRegex, block.trimEnd());
       if (!updated.endsWith('\n')) updated += '\n';
       fs.writeFileSync(CONFIG_PATH, updated);
       return true;
     }
-
     const afterDefaultGroupRegex = /(^\s*defaultGroupSettings\s*:\s*\{[\s\S]*?\}\s*,\s*$)/m;
     if (afterDefaultGroupRegex.test(updated)) {
-      updated = updated.replace(afterDefaultGroupRegex, (match) => `${match}\n${block.trimEnd()}`);
+      updated = updated.replace(afterDefaultGroupRegex, (m) => `${m}\n${block.trimEnd()}`);
       if (!updated.endsWith('\n')) updated += '\n';
       fs.writeFileSync(CONFIG_PATH, updated);
       return true;
     }
-
     const endRegex = /\n\};\s*$/;
     if (endRegex.test(updated)) {
       updated = updated.replace(endRegex, `\n\n${block.trimEnd()}\n};\n`);
       fs.writeFileSync(CONFIG_PATH, updated);
       return true;
     }
-
     return false;
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 };
 
-// Lid mapping (same as before)
+// ─── LID mapping helpers (exact copy from handler.js, but local to this plugin) ───
 const lidMappingCache = new Map();
+let authDirCache = { expiresAt: 0, dirs: [] };
+
+const getAuthDirectories = () => {
+  const now = Date.now();
+  if (authDirCache.expiresAt > now && authDirCache.dirs.length) return authDirCache.dirs;
+  const dirs = [];
+  const primarySession = path.join(__dirname, '..', '..', config.sessionName || 'session');
+  if (fs.existsSync(primarySession)) dirs.push(primarySession);
+  const sessionsRoot = path.join(__dirname, '..', '..', 'sessions');
+  if (fs.existsSync(sessionsRoot)) {
+    try {
+      for (const entry of fs.readdirSync(sessionsRoot, { withFileTypes: true })) {
+        if (entry.isDirectory() && entry.name.startsWith('auth-')) {
+          dirs.push(path.join(sessionsRoot, entry.name));
+        }
+      }
+    } catch {}
+  }
+  authDirCache = { expiresAt: now + 30000, dirs: [...new Set(dirs.map(d => path.resolve(d)))] };
+  return authDirCache.dirs;
+};
+
 const getLidMappingValue = (user, direction) => {
   if (!user) return null;
-  const key = `${direction}:${user}`;
-  if (lidMappingCache.has(key)) return lidMappingCache.get(key);
-  const sessionPath = path.join(__dirname, '..', '..', config.sessionName || 'session');
+  const cacheKey = `${direction}:${user}`;
+  if (lidMappingCache.has(cacheKey)) return lidMappingCache.get(cacheKey);
   const suffix = direction === 'pnToLid' ? '.json' : '_reverse.json';
-  const filePath = path.join(sessionPath, `lid-mapping-${user}${suffix}`);
-  if (!fs.existsSync(filePath)) {
-    lidMappingCache.set(key, null);
-    return null;
+  for (const sessionPath of getAuthDirectories()) {
+    const filePath = path.join(sessionPath, `lid-mapping-${user}${suffix}`);
+    if (!fs.existsSync(filePath)) continue;
+    try {
+      const raw = fs.readFileSync(filePath, 'utf8').trim();
+      const value = raw ? JSON.parse(raw) : null;
+      lidMappingCache.set(cacheKey, value || null);
+      return value || null;
+    } catch { continue; }
   }
-  try {
-    const raw = fs.readFileSync(filePath, 'utf8').trim();
-    const value = raw ? JSON.parse(raw) : null;
-    lidMappingCache.set(key, value || null);
-    return value || null;
-  } catch {
-    lidMappingCache.set(key, null);
-    return null;
-  }
+  lidMappingCache.set(cacheKey, null);
+  return null;
 };
 
 const normalizeJidWithLid = (jid) => {
-  if (!jid || typeof jid !== 'string') return jid;
+  if (!jid) return jid;
+  if (typeof jid !== 'string') return jid;
   if (jid.endsWith('@g.us') || jid === 'status@broadcast') return jid;
   try {
     const decoded = jidDecode(jid);
-    if (!decoded?.user) return jid;
+    if (!decoded?.user) {
+      const raw = jid.split(':')[0].split('@')[0];
+      return `${raw}@s.whatsapp.net`;
+    }
     let user = decoded.user;
-    const pnUser = getLidMappingValue(user, 'lidToPn');
-    if (pnUser) user = pnUser;
+    let server = decoded.server === 'c.us' ? 's.whatsapp.net' : decoded.server;
+    const mapToPn = () => {
+      const pnUser = getLidMappingValue(user, 'lidToPn');
+      if (pnUser) {
+        user = pnUser;
+        server = server === 'hosted.lid' ? 'hosted' : 's.whatsapp.net';
+        return true;
+      }
+      return false;
+    };
+    if (server === 'lid' || server === 'hosted.lid') {
+      mapToPn();
+    } else if (server === 's.whatsapp.net' || server === 'hosted') {
+      mapToPn();
+    }
+    if (server === 'hosted') return jidEncode(user, 'hosted');
     return jidEncode(user, 's.whatsapp.net');
-  } catch {
-    return jid;
-  }
+  } catch { return jid; }
 };
 
-const guessExt = (type, mimetype, fileName) => {
-  if (fileName && fileName.includes('.')) {
-    const ext = path.extname(fileName).slice(1);
-    if (ext) return ext;
-  }
-  const mt = (mimetype || '').toLowerCase();
-  if (type === 'stickerMessage') return 'webp';
-  if (type === 'imageMessage') return 'jpg';
-  if (type === 'videoMessage') return 'mp4';
-  if (type === 'audioMessage') return mt.includes('ogg') ? 'ogg' : 'mp3';
-  if (mt.includes('pdf')) return 'pdf';
-  if (mt.includes('zip')) return 'zip';
-  if (mt.includes('rar')) return 'rar';
-  if (mt.includes('7z')) return '7z';
-  if (mt.includes('json')) return 'json';
-  if (mt.includes('plain')) return 'txt';
-  return 'bin';
+const getPhoneNumber = (jid) => {
+  if (!jid) return '';
+  const normalized = normalizeJidWithLid(jid);
+  return String(normalized).split('@')[0].replace(/\D/g, '');
 };
 
-// Build banner with thumbnail linking to website
-// Build banner with thumbnail linking to website
+// ─── Contact name & Chat name ───
+const getContactName = (sock, jid) => {
+  const phoneJid = normalizeJidWithLid(jid);
+  const contact = sock?.store?.contacts?.[phoneJid] || null;
+  return contact?.notify || contact?.name || contact?.verifiedName || '';
+};
+
+const getChatName = async (sock, jid) => {
+  if (jid === 'status@broadcast') return 'Status Broadcast';
+  if (jid.endsWith('@g.us')) {
+    try {
+      const metadata = await sock.groupMetadata(jid);
+      return metadata.subject || 'Unknown Group';
+    } catch { return 'Unknown Group'; }
+  }
+  const name = getContactName(sock, jid);
+  return name || getPhoneNumber(jid) || 'Private Chat';
+};
+
+// ─── Banner context ───
 const buildBannerContextInfo = (sock, deleterJid, senderJid) => {
   const defaults = getConfigDefaults();
   const thumb = defaults.bannerImageUrl || '';
   if (!thumb) return undefined;
-
   const websiteUrl = config.social?.website || 'https://proboy.vercel.app';
-  const deleterNum = deleterJid ? String(deleterJid).split('@')[0] : 'Unknown';
-  const senderNum = senderJid ? String(senderJid).split('@')[0] : 'Unknown';
-
+  const deleterNum = getPhoneNumber(deleterJid);
+  const senderNum = getPhoneNumber(senderJid);
   return {
     externalAdReply: {
       title: 'ANTIDELETE',
@@ -242,84 +245,29 @@ const buildBannerContextInfo = (sock, deleterJid, senderJid) => {
   };
 };
 
-// Get contact name for display
-const getContactName = (sock, jid) => {
-  const j = normalizeJidWithLid(jid);
-  const contact = sock?.store?.contacts?.[j] || sock?.contacts?.[j] || null;
-  const name = contact?.notify || contact?.name || contact?.verifiedName || '';
-  const cleaned = typeof name === 'string' ? name.trim() : '';
-  return cleaned;
-};
-
-const jidToNumber = (jid) => {
-  if (!jid) return '';
-  const raw = String(jid).split('@')[0].split(':')[0];
-  return raw.replace(/\D/g, '');
-};
-
-const toPlainJid = (jid) => {
-  const n = jidToNumber(jid);
-  return n ? `${n}@s.whatsapp.net` : null;
-};
-
-const normalizeDestinationJid = (input) => {
-  const raw = String(input || '').trim();
-  if (!raw) return null;
-  if (raw === 'chat' || raw === 'bot' || raw === 'owner') return raw;
-  if (raw.includes('@')) return raw;
-  const digits = raw.replace(/\D/g, '');
-  return digits ? `${digits}@s.whatsapp.net` : null;
-};
-
-// Get chat name (group subject or contact name)
-const getChatName = async (sock, jid) => {
-  if (jid === 'status@broadcast') return 'Status Broadcast';
-  if (jid.endsWith('@g.us')) {
-    try {
-      const metadata = await sock.groupMetadata(jid);
-      return metadata.subject || 'Unknown Group';
-    } catch {
-      return 'Unknown Group';
-    }
-  } else {
-    // Private chat – try contact name, else number
-    const name = getContactName(sock, jid);
-    if (name) return name;
-    const number = jid.split('@')[0];
-    return number || 'Private Chat';
-  }
-};
-
+// ─── Cache management ───
 const pruneCache = () => {
   const now = Date.now();
   for (const [k, v] of messageCache.entries()) {
-    if (!v || !v.timestamp || now - v.timestamp > CACHE_TTL_MS) {
-      if (v?.media?.path) {
-        try { fs.unlinkSync(v.media.path); } catch {}
-      }
+    if (!v?.timestamp || now - v.timestamp > CACHE_TTL_MS) {
+      if (v?.media?.path) try { fs.unlinkSync(v.media.path); } catch {}
       messageCache.delete(k);
     }
-    // Media retention (delete old media files earlier than record TTL)
-    if (v?.media?.path && v.timestamp && now - v.timestamp > MEDIA_TTL_MS) {
+    if (v?.media?.path && now - v.timestamp > MEDIA_TTL_MS) {
       try { fs.unlinkSync(v.media.path); } catch {}
       v.media = null;
       messageCache.set(k, v);
     }
   }
   if (messageCache.size > MAX_RECORDS) {
-    const sorted = Array.from(messageCache.entries()).sort((a, b) => (a[1]?.timestamp || 0) - (b[1]?.timestamp || 0));
-    const removeCount = messageCache.size - MAX_RECORDS;
-    for (let i = 0; i < removeCount; i++) {
-      const [k, v] = sorted[i] || [];
-      if (!k) continue;
-      if (v?.media?.path) {
-        try { fs.unlinkSync(v.media.path); } catch {}
-      }
-      messageCache.delete(k);
+    const sorted = [...messageCache.entries()].sort((a,b) => (a[1]?.timestamp||0)-(b[1]?.timestamp||0));
+    for (let i=0; i<messageCache.size-MAX_RECORDS; i++) {
+      const [k,v] = sorted[i]||[];
+      if (k) { if(v?.media?.path) try{fs.unlinkSync(v.media.path)}catch{}; messageCache.delete(k); }
     }
   }
-  for (const [k, ts] of processedDeletes.entries()) {
-    if (!ts || now - ts > 5 * 60 * 1000) processedDeletes.delete(k);
+  for (const [k,ts] of processedDeletes.entries()) {
+    if (!ts || Date.now()-ts>5*60*1000) processedDeletes.delete(k);
   }
 };
 
@@ -327,85 +275,45 @@ const cleanupMediaDir = () => {
   try {
     if (!fs.existsSync(MEDIA_DIR)) return;
     const now = Date.now();
-    const files = fs.readdirSync(MEDIA_DIR).map((name) => {
-      const full = path.join(MEDIA_DIR, name);
-      try {
-        const st = fs.statSync(full);
-        if (!st.isFile()) return null;
-        return { full, mtimeMs: st.mtimeMs, size: st.size };
-      } catch {
-        return null;
-      }
+    const files = fs.readdirSync(MEDIA_DIR).map(name=>{
+      const full = path.join(MEDIA_DIR,name);
+      try { const st=fs.statSync(full); if(!st.isFile()) return null; return {full,mtimeMs:st.mtimeMs,size:st.size}; } catch { return null; }
     }).filter(Boolean);
-
-    // Delete old files
-    for (const f of files) {
-      if (now - f.mtimeMs > MEDIA_TTL_MS) {
-        try { fs.unlinkSync(f.full); } catch {}
-      }
-    }
-
-    // Enforce total size cap
-    const remaining = fs.readdirSync(MEDIA_DIR).map((name) => {
-      const full = path.join(MEDIA_DIR, name);
-      try {
-        const st = fs.statSync(full);
-        if (!st.isFile()) return null;
-        return { full, mtimeMs: st.mtimeMs, size: st.size };
-      } catch {
-        return null;
-      }
+    for(const f of files) if(now-f.mtimeMs>MEDIA_TTL_MS) try{fs.unlinkSync(f.full)}catch{}
+    const remaining = fs.readdirSync(MEDIA_DIR).map(name=>{
+      const full = path.join(MEDIA_DIR,name);
+      try { const st=fs.statSync(full); if(!st.isFile()) return null; return {full,mtimeMs:st.mtimeMs,size:st.size}; } catch { return null; }
     }).filter(Boolean);
-
-    let total = remaining.reduce((a, b) => a + (b.size || 0), 0);
-    if (total <= MAX_MEDIA_TOTAL_BYTES) return;
-
-    const sortedByOld = remaining.sort((a, b) => a.mtimeMs - b.mtimeMs);
-    for (const f of sortedByOld) {
-      if (total <= MAX_MEDIA_TOTAL_BYTES) break;
-      try { fs.unlinkSync(f.full); } catch {}
-      total -= (f.size || 0);
+    let total = remaining.reduce((a,b)=>a+(b.size||0),0);
+    if(total<=MAX_MEDIA_TOTAL_BYTES) return;
+    const sortedByOld = remaining.sort((a,b)=>a.mtimeMs-b.mtimeMs);
+    for(const f of sortedByOld) {
+      if(total<=MAX_MEDIA_TOTAL_BYTES) break;
+      try{fs.unlinkSync(f.full)}catch{}
+      total-=f.size||0;
     }
-  } catch {
-    // ignore
-  }
+  } catch {}
 };
 
 const loadCache = () => {
   const obj = safeReadJson(CACHE_FILE);
-  if (!obj) return;
-  const entries = Object.entries(obj);
-  messageCache = new Map(entries);
+  if (obj) messageCache = new Map(Object.entries(obj));
   pruneCache();
 };
 
-const saveCache = () => {
-  pruneCache();
-  safeWriteJson(CACHE_FILE, Object.fromEntries(messageCache));
-};
-
+const saveCache = () => { pruneCache(); safeWriteJson(CACHE_FILE, Object.fromEntries(messageCache)); };
 loadCache();
-
 let saveScheduled = false;
 const scheduleSave = () => {
   if (saveScheduled) return;
   saveScheduled = true;
-  setTimeout(() => {
-    saveScheduled = false;
-    saveCache();
-  }, 2000);
+  setTimeout(() => { saveScheduled=false; saveCache(); }, 2000);
 };
-
-setInterval(() => {
-  saveCache();
-}, 60 * 1000);
-
-// Keep media folder from growing forever
+setInterval(() => saveCache(), 60*1000);
 cleanupMediaDir();
-setInterval(() => {
-  cleanupMediaDir();
-}, 5 * 60 * 1000);
+setInterval(() => cleanupMediaDir(), 5*60*1000);
 
+// ==================== Plugin Export ====================
 module.exports = {
   name: 'antidelete',
   aliases: ['antidel'],
@@ -417,78 +325,51 @@ module.exports = {
   async execute(sock, msg, args, extra) {
     const { reply, react } = extra;
     const database = getDb(sock, extra);
-
-    const subCmd = args[0] ? args[0].toLowerCase() : '';
+    const subCmd = args[0]?.toLowerCase() || '';
 
     try {
       await react('⏳');
-
       if (subCmd === 'on' || subCmd === 'enable') {
         database.setGlobalSetting('antidelete', true);
         const defaults = getConfigDefaults();
         upsertAntideleteSettingsInConfig({ ...defaults, enabled: true });
         await reply('✅ Antidelete enabled globally.');
-      } 
-      else if (subCmd === 'off' || subCmd === 'disable') {
+      } else if (subCmd === 'off' || subCmd === 'disable') {
         database.setGlobalSetting('antidelete', false);
         const defaults = getConfigDefaults();
         upsertAntideleteSettingsInConfig({ ...defaults, enabled: false });
         await reply('❌ Antidelete disabled globally.');
-      } 
-      else if (subCmd === 'chat') {
+      } else if (subCmd === 'chat') {
         database.setGlobalSetting('antideleteDest', 'chat');
         const defaults = getConfigDefaults();
         upsertAntideleteSettingsInConfig({ ...defaults, dest: 'chat', statusDest: defaults.statusDest || 'bot' });
-        await reply('✅ Message recovery destination set to: original chat.\nStatuses will use the configured status destination.');
-      } 
-      else if (subCmd === 'bot') {
+        await reply('✅ Recovery destination set to: original chat.\nStatuses go to bot number.');
+      } else if (subCmd === 'bot') {
         database.setGlobalSetting('antideleteDest', 'bot');
         database.setGlobalSetting('antideleteStatusDest', 'bot');
         const defaults = getConfigDefaults();
         upsertAntideleteSettingsInConfig({ ...defaults, dest: 'bot', statusDest: 'bot' });
-        await reply('✅ Recovery destination set to: bot number for messages and statuses.');
-      } 
-      else if (subCmd === 'jid' || (subCmd && subCmd.includes('@'))) {
-        const jid = subCmd === 'jid' ? (args[1] ? args[1].trim() : '') : subCmd;
-        const normalized = normalizeDestinationJid(jid);
-        if (!normalized || normalized === 'chat' || normalized === 'bot' || normalized === 'owner') {
-          return reply('❌ Invalid JID. Example: `.antidelete jid 22222@lid` or `.antidelete 1234567890@s.whatsapp.net`');
-        }
+        await reply('✅ Recovery destination set to: bot number.');
+      } else if (subCmd === 'jid' || (subCmd && subCmd.includes('@'))) {
+        const jid = subCmd === 'jid' ? (args[1]?.trim() || '') : subCmd;
+        const normalized = (jid.endsWith('@lid')||jid.endsWith('@hosted.lid')||jid.includes('@')) ? jid : `${jid.replace(/\D/g,'')}@s.whatsapp.net`;
+        if (!normalized.includes('@')) return reply('❌ Invalid JID.');
         database.setGlobalSetting('antideleteDest', normalized);
         database.setGlobalSetting('antideleteStatusDest', normalized);
         const defaults = getConfigDefaults();
         upsertAntideleteSettingsInConfig({ ...defaults, dest: normalized, statusDest: normalized });
-        await reply(`✅ Antidelete target set to: ${normalized}\nAll deleted messages and statuses will be sent there.`);
-      } 
-      else if (subCmd === 'status') {
+        await reply(`✅ All deletes sent to: ${normalized}`);
+      } else if (subCmd === 'status') {
         const defaults = getConfigDefaults();
         const enabled = database.getGlobalSetting('antidelete');
-        const effectiveEnabled = enabled === undefined ? defaults.enabled : !!enabled;
+        const effEnabled = enabled===undefined ? defaults.enabled : !!enabled;
         const dest = database.getGlobalSetting('antideleteDest') || defaults.dest;
         const statusDest = database.getGlobalSetting('antideleteStatusDest') || defaults.statusDest || dest;
         const banner = database.getGlobalSetting('antideleteBannerImageUrl') || defaults.bannerImageUrl;
-        await reply(
-          `📊 *Antidelete Status*\n\n` +
-          `Enabled: ${effectiveEnabled ? '✅' : '❌'}\n` +
-          `Message destination: ${dest}\n` +
-          `Status destination: ${statusDest}\n` +
-          `Banner: ${banner ? '✅ set' : '❌ none'}\n` +
-          `Cache: ${messageCache.size} items`
-        );
-      } 
-      else {
-        await reply(
-          `*Antidelete (Owner)*\n\n` +
-          `.antidelete on\n` +
-          `.antidelete off\n` +
-          `.antidelete status\n` +
-          `.antidelete chat      (send to original chat)\n` +
-          `.antidelete bot       (send to bot number)\n` +
-          `.antidelete jid <jid> (send all deletes to custom JID)\n` +
-          `.antidelete 22222@lid   (direct custom target)\n`
-        );
+        await reply(`📊 *Antidelete Status*\n\nEnabled: ${effEnabled?'✅':'❌'}\nMessage dest: ${dest}\nStatus dest: ${statusDest}\nBanner: ${banner?'✅ set':'❌ none'}\nCache size: ${messageCache.size}`);
+      } else {
+        await reply(`*Antidelete (Owner)*\n\n.antidelete on/.off/.status/.chat/.bot/.jid <jid>`);
       }
-
       await react('✅');
     } catch (error) {
       await reply(`❌ ${error.message}`);
@@ -500,7 +381,7 @@ module.exports = {
     const database = getDb(sock, extra);
     const defaults = getConfigDefaults();
     const enabled = database.getGlobalSetting('antidelete');
-    const effectiveEnabled = enabled === undefined ? defaults.enabled : !!enabled;
+    const effectiveEnabled = enabled===undefined ? defaults.enabled : !!enabled;
     if (!effectiveEnabled) return;
 
     const { from, sender } = extra;
@@ -513,24 +394,24 @@ module.exports = {
     const type = getFirstMessageType(content);
     if (!type) return;
 
-    // Respect per-chat toggle if present
     if (from !== 'status@broadcast') {
       const chatSettings = database.getChatSettings(from);
-      if (chatSettings && chatSettings.antidelete === false) return;
+      if (chatSettings?.antidelete === false) return;
     }
+
+    // Normalize sender immediately using our local normalizer
+    const normalizedSender = normalizeJidWithLid(sender) || sender;
 
     const record = {
       timestamp: Date.now(),
       chatJid: from,
       msgId,
-      sender,
+      sender: normalizedSender,   // always store phone JID
       type,
       text: null,
       caption: null,
       media: null,
-      flags: {
-        viewOnce: !!(msg.message?.viewOnceMessageV2 || msg.message?.viewOnceMessage)
-      }
+      flags: { viewOnce: !!(msg.message?.viewOnceMessageV2 || msg.message?.viewOnceMessage) }
     };
 
     const msgContent = content[type];
@@ -539,48 +420,38 @@ module.exports = {
       record.text = typeof msgContent === 'string' ? msgContent : null;
     } else if (type === 'extendedTextMessage') {
       record.text = msgContent?.text || null;
-    } else if (type === 'imageMessage' || type === 'videoMessage') {
-      record.caption = msgContent?.caption || null;
-    } else if (type === 'documentMessage') {
+    } else if (type === 'imageMessage' || type === 'videoMessage' || type === 'documentMessage') {
       record.caption = msgContent?.caption || null;
     }
-    
-    if (['imageMessage', 'videoMessage', 'audioMessage', 'documentMessage', 'stickerMessage'].includes(type)) {
+
+    if (['imageMessage','videoMessage','audioMessage','documentMessage','stickerMessage'].includes(type)) {
       try {
-        const msgForDl = { ...msg, message: content };
         const buffer = await downloadMediaMessage(
-          msgForDl,
+          { ...msg, message: content },
           'buffer',
           {},
           { logger: undefined, reuploadRequest: sock.updateMediaMessage }
         );
-        if (buffer && Buffer.isBuffer(buffer) && buffer.length) {
-          if (buffer.length > MAX_SINGLE_MEDIA_BYTES) {
-            record.media = null;
-          } else {
+        if (buffer && Buffer.isBuffer(buffer) && buffer.length && buffer.length <= MAX_SINGLE_MEDIA_BYTES) {
           const mimetype = msgContent?.mimetype || null;
           const fileName = msgContent?.fileName || null;
-          const ext = guessExt(type, mimetype, fileName);
-          const fileBase = `${Date.now()}_${msgId.replace(/[^a-zA-Z0-9_-]/g, '')}.${ext}`;
+          const ext = (() => {
+            if (fileName?.includes('.')) return path.extname(fileName).slice(1);
+            if (type==='stickerMessage') return 'webp';
+            if (type==='imageMessage') return 'jpg';
+            if (type==='videoMessage') return 'mp4';
+            if (type==='audioMessage') return mimetype?.includes('ogg') ? 'ogg' : 'mp3';
+            return 'bin';
+          })();
+          const fileBase = `${Date.now()}_${msgId.replace(/[^a-zA-Z0-9_-]/g,'')}.${ext}`;
           const filePath = path.join(MEDIA_DIR, fileBase);
           fs.writeFileSync(filePath, buffer);
-
-          record.media = {
-            path: filePath,
-            mimetype,
-            fileName,
-            ptt: !!msgContent?.ptt
-          };
-          }
+          record.media = { path: filePath, mimetype, fileName, ptt: !!msgContent?.ptt };
         }
-      } catch {
-        // Media may fail to download; still keep metadata.
-        record.media = record.media || null;
-      }
+      } catch {}
     }
 
-    const key = cacheKey(from, msgId);
-    messageCache.set(key, record);
+    messageCache.set(cacheKey(from, msgId), record);
     scheduleSave();
   },
 
@@ -588,7 +459,7 @@ module.exports = {
     const database = getDb(sock, null);
     const defaults = getConfigDefaults();
     const enabled = database.getGlobalSetting('antidelete');
-    const effectiveEnabled = enabled === undefined ? defaults.enabled : !!enabled;
+    const effectiveEnabled = enabled===undefined ? defaults.enabled : !!enabled;
     if (!effectiveEnabled) return;
 
     const key = deleteInfo?.key;
@@ -600,64 +471,57 @@ module.exports = {
 
     const found = findCachedRecord(key.remoteJid, key.id);
     if (!found) return;
-    const { mapKey: cachedKey, record: cached } = found;
-
-    // Remove from cache so it can't be re-sent twice
-    messageCache.delete(cachedKey);
+    const { mapKey: cacheKeyToDelete, record: cached } = found;
+    messageCache.delete(cacheKeyToDelete);
     scheduleSave();
 
-    const sender = cached.sender ? normalizeJidWithLid(cached.sender) : null;
-    const chatJid = cached.chatJid;
-    const deleter = deleteInfo?.deleter ? normalizeJidWithLid(deleteInfo.deleter) : null;
+    // Normalize both sender & deleter using our local function
+    const rawDeleter = deleteInfo?.deleter || null;
+    const senderJid = cached.sender ? normalizeJidWithLid(cached.sender) : null;
+    const deleterJid = rawDeleter ? normalizeJidWithLid(rawDeleter) : null;
 
-    // Determine destination
+    const senderNum = senderJid ? getPhoneNumber(senderJid) : 'Unknown';
+    const deleterNum = deleterJid ? getPhoneNumber(deleterJid) : (senderNum || 'Unknown');
+
+    const chatJid = cached.chatJid;
+    const isGroup = chatJid?.endsWith('@g.us');
+    const isStatus = chatJid === 'status@broadcast';
+
+    // Destination
     const destSetting = database.getGlobalSetting('antideleteDest') || defaults.dest;
     const statusDestSetting = database.getGlobalSetting('antideleteStatusDest') || defaults.statusDest || destSetting;
-    const botJid = toPlainJid(sock.user?.id) || normalizeJidWithLid(sock.user?.id); // bot's own number
-
+    const botJid = sock.user?.id ? normalizeJidWithLid(sock.user.id) : null;
     let targetJid;
-    if (chatJid === 'status@broadcast') {
-      targetJid = (statusDestSetting === 'chat' || statusDestSetting === 'bot' || statusDestSetting === 'owner') ? botJid : statusDestSetting;
+    if (isStatus) {
+      targetJid = (statusDestSetting === 'chat' || statusDestSetting === 'bot' || statusDestSetting === 'owner') ? botJid : normalizeJidWithLid(statusDestSetting);
     } else {
-      if (destSetting === 'chat') {
-        targetJid = chatJid;
-      } else if (destSetting === 'bot' || destSetting === 'owner') {
-        targetJid = botJid;
-      } else {
-        targetJid = destSetting;
-      }
+      if (destSetting === 'chat') targetJid = chatJid;
+      else if (destSetting === 'bot' || destSetting === 'owner') targetJid = botJid;
+      else targetJid = normalizeJidWithLid(destSetting);
     }
-
     if (!targetJid) return;
-    if (!String(targetJid).endsWith('@lid') && !String(targetJid).endsWith('@hosted.lid')) {
-      targetJid = normalizeJidWithLid(targetJid);
-    }
 
-    // Build mentions
+    // Mentions
     const mentions = [];
-    const senderMention = toPlainJid(sender) || sender;
-    const deleterMention = toPlainJid(deleter) || deleter;
-    if (senderMention) mentions.push(senderMention);
-    if (deleterMention && deleterMention !== senderMention) mentions.push(deleterMention);
+    if (senderJid && !senderJid.endsWith('@g.us') && senderJid !== 'status@broadcast') mentions.push(senderJid);
+    if (deleterJid && deleterJid !== senderJid && !deleterJid.endsWith('@g.us') && deleterJid !== 'status@broadcast') mentions.push(deleterJid);
 
-    const senderNum = sender ? jidToNumber(sender) || 'Unknown' : 'Unknown';
-    const deleterNum = deleter ? (jidToNumber(deleter) || senderNum) : senderNum;
-    const senderName = sender ? getContactName(sock, sender) : '';
-    const deleterName = deleter ? getContactName(sock, deleter) : '';
+    // Header
     const chatName = await getChatName(sock, chatJid);
-    const sourceLabel = chatJid === 'status@broadcast' ? 'Status' : 'Message';
-    const senderLabel = senderName || senderNum;
-    const deleterLabel = deleterName || deleterNum;
+    let header = `*ANTIDELETE DETECTED*\n`;
+    header += `Type: ${isStatus ? 'Status' : 'Message'}\n`;
+    if (isGroup) {
+      header += `Group: ${chatName}\n`;
+    } else if (!isStatus) {
+      header += `Chat: ${chatName}\n`;
+    } else {
+      header += `From: Status Broadcast\n`;
+    }
+    header += `Sender: @${senderNum}\n`;
+    header += `Deleted By: @${deleterNum}`;
 
-    const headerLines = [];
-    headerLines.push('*ANTIDELETE DETECTED*');
-    headerLines.push(`Type: ${sourceLabel}`);
-    headerLines.push(`From: ${chatName}`);
-    headerLines.push(`Sender: ${senderLabel} (@${senderNum})`);
-    headerLines.push(`Deleted By: ${deleterLabel} (@${deleterNum})`);
-
-    const baseCaption = headerLines.join('\n');
-    const contextInfo = buildBannerContextInfo(sock, deleter, sender);
+    const baseCaption = header;
+    const contextInfo = buildBannerContextInfo(sock, deleterJid, senderJid);
 
     const type = cached.type;
     const mediaPath = cached.media?.path || null;
@@ -665,62 +529,41 @@ module.exports = {
     try {
       if (type === 'conversation' || type === 'extendedTextMessage') {
         const text = cached.text || '';
-        const out = `${baseCaption}\n\n📝 Text:\n${text}`.trim();
+        const out = `${baseCaption}\n\n📝 Text:\n${text}`;
         await sock.sendMessage(targetJid, { text: out, mentions, contextInfo }, {});
         return;
       }
-
       if (type === 'imageMessage' && mediaPath) {
-        const vo = cached.flags?.viewOnce ? '\n\n🔓 Recovered from view-once media.' : '';
-        const cap = `${cached.caption ? `${baseCaption}\n\n📝 Caption:\n${cached.caption}` : baseCaption}${vo}`;
-        await sock.sendMessage(
-          targetJid,
-          { image: { url: mediaPath }, caption: cap, mentions, contextInfo },
-          {}
-        );
+        const cap = `${baseCaption}${cached.caption ? '\n\n📝 Caption:\n'+cached.caption : ''}${cached.flags?.viewOnce ? '\n\n🔓 Recovered from view-once' : ''}`;
+        await sock.sendMessage(targetJid, { image: { url: mediaPath }, caption: cap, mentions, contextInfo }, {});
         try { fs.unlinkSync(mediaPath); } catch {}
         return;
       }
-
       if (type === 'videoMessage' && mediaPath) {
-        const vo = cached.flags?.viewOnce ? '\n\n🔓 Recovered from view-once media.' : '';
-        const cap = `${cached.caption ? `${baseCaption}\n\n📝 Caption:\n${cached.caption}` : baseCaption}${vo}`;
-        await sock.sendMessage(
-          targetJid,
-          { video: { url: mediaPath }, caption: cap, mentions, contextInfo },
-          {}
-        );
+        const cap = `${baseCaption}${cached.caption ? '\n\n📝 Caption:\n'+cached.caption : ''}${cached.flags?.viewOnce ? '\n\n🔓 Recovered from view-once' : ''}`;
+        await sock.sendMessage(targetJid, { video: { url: mediaPath }, caption: cap, mentions, contextInfo }, {});
         try { fs.unlinkSync(mediaPath); } catch {}
         return;
       }
-
       if (type === 'documentMessage' && mediaPath) {
-        const fileName = cached.media?.fileName || 'document';
-        const mimetype = cached.media?.mimetype || undefined;
-        const cap = cached.caption ? `${baseCaption}\n\n📝 Caption:\n${cached.caption}` : baseCaption;
-        await sock.sendMessage(targetJid, { document: { url: mediaPath }, fileName, mimetype, caption: cap, mentions, contextInfo }, {});
+        const cap = `${baseCaption}${cached.caption ? '\n\n📝 Caption:\n'+cached.caption : ''}`;
+        await sock.sendMessage(targetJid, { document: { url: mediaPath }, fileName: cached.media?.fileName || 'document', mimetype: cached.media?.mimetype, caption: cap, mentions, contextInfo }, {});
         try { fs.unlinkSync(mediaPath); } catch {}
         return;
       }
-
       if (type === 'audioMessage' && mediaPath) {
-        const mimetype = cached.media?.mimetype || 'audio/mpeg';
         await sock.sendMessage(targetJid, { text: baseCaption, mentions, contextInfo }, {});
-        await sock.sendMessage(targetJid, { audio: { url: mediaPath }, mimetype, ptt: !!cached.media?.ptt }, {});
+        await sock.sendMessage(targetJid, { audio: { url: mediaPath }, mimetype: cached.media?.mimetype || 'audio/mpeg', ptt: !!cached.media?.ptt }, {});
         try { fs.unlinkSync(mediaPath); } catch {}
         return;
       }
-
       if (type === 'stickerMessage' && mediaPath) {
         await sock.sendMessage(targetJid, { text: baseCaption, mentions, contextInfo }, {});
         await sock.sendMessage(targetJid, { sticker: { url: mediaPath } }, {});
         try { fs.unlinkSync(mediaPath); } catch {}
         return;
       }
-
-      await sock.sendMessage(targetJid, { text: `${baseCaption}\n\n⚠️ Could not recover media/text for type: ${type}`.trim(), mentions, contextInfo }, {});
-    } catch {
-      // Swallow errors to avoid crashing the bot on revoke storms
-    }
+      await sock.sendMessage(targetJid, { text: `${baseCaption}\n\n⚠️ Could not recover media/text of type: ${type}`, mentions, contextInfo }, {});
+    } catch {}
   }
 };
