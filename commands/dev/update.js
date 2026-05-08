@@ -1,15 +1,7 @@
 /**
- * Update Command – Smart Update with Custom File Preservation & Owner Notification
- *
- * - Downloads the configured ZIP (or a custom URL)
- * - Compares files against a local core-manifest.json (auto‑generated on first run)
- * - Extracts ONLY files that belong to the core release, preserving all custom/added files
- * - Sends a detailed update report to the bot owner via WhatsApp
- * - Restarts the bot automatically
- *
- * Preserved directories (never touched):
- *   node_modules, session, sessions, tmp, temp, database, config.js
- * Custom files (not in core-manifest.json) are NEVER overwritten.
+ * Update Command – Skips custom installed plugins
+ * Uses adm-zip (already required by updateViaZip) to extract only official files.
+ * Owner gets notified privately after successful update.
  */
 
 const config = require('../../config');
@@ -17,48 +9,31 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 const { execSync } = require('child_process');
-const AdmZip = require('adm-zip');
 
-// ─── Helpers ────────────────────────────────────────
-
-/** Read the local core manifest (list of relative file paths) or generate one. */
-function loadLocalManifest() {
-  const manifestPath = path.join(__dirname, '../../core-manifest.json');
-  if (fs.existsSync(manifestPath)) {
-    try {
-      return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    } catch {}
-  }
-
-  // ── Generate initial manifest from current files (first run) ──
-  const root = path.join(__dirname, '../..');
-  const preserved = [
-    'node_modules', 'session', 'sessions', 'tmp', 'temp',
-    'database', 'config.js', 'core-manifest.json', '.git'
-  ];
-
-  const walk = (dir) => {
-    let files = [];
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      const relative = path.relative(root, fullPath).replace(/\\/g, '/');
-      if (preserved.some(p => relative.startsWith(p))) continue;
-      if (entry.isDirectory()) {
-        files = files.concat(walk(fullPath));
-      } else {
-        files.push(relative);
-      }
-    }
-    return files;
-  };
-
-  const files = walk(root);
-  fs.writeFileSync(manifestPath, JSON.stringify(files, null, 2));
-  return files;
+// Try to load adm-zip (should already be installed for updateViaZip)
+let AdmZip;
+try {
+  AdmZip = require('adm-zip');
+} catch {
+  // adm-zip not installed; we'll fail gracefully in execute
 }
 
-/** Send a message to the bot owner (first owner in config.ownerNumber). */
+// ─── Config ─────────────────────────────────────────
+const INSTALLED_LOG = path.join(__dirname, '../../database/installed_plugins.json');
+const PRESERVED_DIRS = [
+  'node_modules', 'session', 'sessions', 'tmp', 'temp',
+  'database', 'config.js', 'core-manifest.json', 'installed_plugins.json'
+];
+
+// ─── Helpers ────────────────────────────────────────
+function loadInstalledPaths() {
+  try {
+    if (!fs.existsSync(INSTALLED_LOG)) return [];
+    const list = JSON.parse(fs.readFileSync(INSTALLED_LOG));
+    return (list || []).map(e => e.path).filter(Boolean);
+  } catch { return []; }
+}
+
 async function notifyOwner(sock, text) {
   try {
     const ownerNum = (config.ownerNumber && config.ownerNumber[0]) || '';
@@ -68,7 +43,6 @@ async function notifyOwner(sock, text) {
   } catch {}
 }
 
-/** Restart the bot via PM2 or process.exit */
 function restartBot() {
   try {
     execSync('pm2 restart all', { stdio: 'ignore' });
@@ -77,28 +51,29 @@ function restartBot() {
   setTimeout(() => process.exit(0), 1000);
 }
 
-// ─── Command Export ─────────────────────────────────
-
 module.exports = {
   name: 'update',
   aliases: ['upgrade'],
   category: 'dev',
-  description: 'Update bot from ZIP URL (preserves custom files, notifies owner)',
+  description: 'Update bot from ZIP URL (preserves custom installed plugins, notifies owner)',
   usage: '.update [optional_zip_url]',
   ownerOnly: true,
 
   async execute(sock, msg, args, extra) {
+    if (!AdmZip) {
+      return extra.reply('❌ Missing required module `adm-zip`. Please run `npm install adm-zip` on your server.');
+    }
+
     const chatId = msg.key.remoteJid;
-    // 1) ZIP URL (use argument if provided, else fallback chain)
     const zipUrl = (args[0] || config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
     if (!zipUrl) {
       return extra.reply('❌ No update URL configured. Set updateZipUrl in config.js or pass a URL: `.update <zip_url>`');
     }
 
-    await extra.reply('🔍 Checking for updates......');
+    await extra.reply('🔄 Updating the bot, please wait…');
 
     try {
-      // 2) Download ZIP to temp directory
+      // 1. Download ZIP
       const tmpDir = path.join(__dirname, '../../tmp');
       if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
       const zipPath = path.join(tmpDir, `update_${Date.now()}.zip`);
@@ -110,44 +85,29 @@ module.exports = {
       });
       fs.writeFileSync(zipPath, Buffer.from(response.data));
 
-      const zip = new AdmZip(zipPath);
-      const zipEntries = zip.getEntries();
-
-      // 3) Load local core manifest (list of relative paths that are "official")
-      const coreFiles = loadLocalManifest(); // array of strings (relative)
-
-      // Also load the new manifest from the ZIP if present, so we can update it locally
-      let newManifest = [];
-      const manifestEntry = zipEntries.find(e => e.entryName === 'core-manifest.json');
-      if (manifestEntry) {
-        newManifest = JSON.parse(manifestEntry.getData().toString('utf8'));
-      } else {
-        // Fallback: use the ZIP entries themselves (excluding directories) as the new manifest
-        newManifest = zipEntries
-          .filter(e => !e.isDirectory)
-          .map(e => e.entryName);
-      }
-
+      // 2. Load skip list (custom installed plugins)
+      const skipPaths = loadInstalledPaths();
       const root = path.join(__dirname, '../..');
-      const preservedDirs = [
-        'node_modules', 'session', 'sessions', 'tmp', 'temp',
-        'database', 'config.js', 'core-manifest.json'
-      ];
 
-      const updatedFiles = [];
-      const addedFiles = [];
+      const zip = new AdmZip(zipPath);
+      const entries = zip.getEntries();
+
+      const updated = [];
+      const added = [];
       const skipped = [];
 
-      // 4) Extract ONLY core files (those present in the NEW manifest)
-      for (const entry of zipEntries) {
+      for (const entry of entries) {
         if (entry.isDirectory) continue;
         const relative = entry.entryName;
-        // Skip if inside any preserved directory
-        if (preservedDirs.some(dir => relative.startsWith(dir + '/') || relative === dir)) {
+
+        // Always skip preserved directories and files
+        if (PRESERVED_DIRS.some(dir => relative === dir || relative.startsWith(dir + '/'))) {
+          skipped.push(relative);
           continue;
         }
-        // Only extract if this file is in the new manifest (i.e. it's an official core file)
-        if (!newManifest.includes(relative)) {
+
+        // Skip if this file was installed manually
+        if (skipPaths.includes(relative)) {
           skipped.push(relative);
           continue;
         }
@@ -158,39 +118,36 @@ module.exports = {
 
         const existed = fs.existsSync(targetPath);
         fs.writeFileSync(targetPath, entry.getData());
-        if (existed) updatedFiles.push(relative);
-        else addedFiles.push(relative);
+        if (existed) updated.push(relative);
+        else added.push(relative);
       }
-
-      // 5) Update the local core manifest to the new one (so future updates reference new core)
-      fs.writeFileSync(path.join(root, 'core-manifest.json'), JSON.stringify(newManifest, null, 2));
 
       // Clean up temp ZIP
       try { fs.unlinkSync(zipPath); } catch {}
 
-      // 6) Build summary message for chat and owner notification
+      // 3. Build summary
       const lines = [];
       lines.push(`✅ *Update complete*`);
-      lines.push(`📥 Updated: ${updatedFiles.length} | Added: ${addedFiles.length}`);
-      lines.push(`⏭️ Skipped (custom/non-core): ${skipped.length}`);
+      lines.push(`📥 Updated: ${updated.length} | Added: ${added.length} | Skipped: ${skipped.length}`);
+      if (skipped.length) lines.push(`🛡️ Custom plugins preserved: ${skipPaths.length}`);
 
-      const sample = [...updatedFiles.slice(0, 15), ...addedFiles.slice(0, 15)].slice(0, 25);
+      const sample = [...updated.slice(0, 15), ...added.slice(0, 15)].slice(0, 25);
       if (sample.length) {
         lines.push('');
         lines.push('*Changed files (sample):*');
         for (const f of sample) lines.push(`- \`${f}\``);
-        if (updatedFiles.length + addedFiles.length > sample.length) {
-          lines.push(`- ...and ${updatedFiles.length + addedFiles.length - sample.length} more`);
+        if (updated.length + added.length > sample.length) {
+          lines.push(`- ...and ${updated.length + added.length - sample.length} more`);
         }
       }
 
-      const ownerMsg = `${lines.join('\n')}\n\n🔄 Restarting now...`;
-      await sock.sendMessage(chatId, { text: ownerMsg }, { quoted: msg });
+      const summary = lines.join('\n') + '\n\n🔄 Restarting now…';
 
-      // 7) Notify owner privately
-      await notifyOwner(sock, ownerMsg);
+      // 4. Send to chat and notify owner
+      await sock.sendMessage(chatId, { text: summary }, { quoted: msg });
+      await notifyOwner(sock, summary);
 
-      // 8) Restart the bot
+      // 5. Restart
       restartBot();
     } catch (error) {
       await sock.sendMessage(chatId, {
