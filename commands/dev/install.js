@@ -7,18 +7,15 @@ const { downloadMediaMessage } = require('@whiskeysockets/baileys');
 const config = require('../../config');
 const ui = require('../../utils/ui');
 
+const INSTALLED_LOG = path.join(__dirname, '../../database/installed_plugins.json');
+
 const getPrimaryOwner = () => String((config.ownerNumber && config.ownerNumber[0]) || '').replace(/[^0-9]/g, '');
 
-// Allowed categories (must match subfolder names in commands/)
 const validCategories = [
   'admin', 'ai', 'anime', 'fun', 'general',
-  'group', 'download', 'media', 'dev', 'owner', 'textmaker', 'utility'
+  'group', 'download', 'media', 'dev', 'owner', 'textmaker', 'utility', 'bug'
 ];
 
-/**
- * Convert a GitHub Gist URL to its raw content URL.
- * Example: https://gist.github.com/user/123abc → https://gist.githubusercontent.com/user/123abc/raw
- */
 function gistToRawUrl(gistUrl) {
   try {
     const url = new URL(gistUrl);
@@ -31,14 +28,9 @@ function gistToRawUrl(gistUrl) {
       }
     }
     return gistUrl;
-  } catch {
-    return gistUrl;
-  }
+  } catch { return gistUrl; }
 }
 
-/**
- * Attempt to restart the bot using PM2; if that fails, exit the process.
- */
 function restartBot() {
   exec('pm2 restart all', (err) => {
     if (err) {
@@ -53,7 +45,6 @@ async function notifyPrimaryOwner(sock, pluginInfo, installerJid) {
     const manager = globalThis.ProBoySessionManager;
     const primarySock = manager?.getPrimarySock?.() || sock;
     if (!primarySock?.sendMessage) return;
-
     const who = String(installerJid || '').split('@')[0] || 'unknown';
     const text = [
       '🧩 *Plugin Installed*',
@@ -66,12 +57,31 @@ async function notifyPrimaryOwner(sock, pluginInfo, installerJid) {
       '',
       `🕒 ${new Date().toLocaleString()}`
     ].filter(Boolean).join('\n');
-
     const owner = getPrimaryOwner();
     if (!owner) return;
     await primarySock.sendMessage(`${owner}@s.whatsapp.net`, { text });
-  } catch {
-    // ignore
+  } catch {}
+}
+
+// ─── New Helper: save installed plugin record ──────
+function saveInstalledPlugin(pluginInfo, installerJid) {
+  try {
+    if (!fs.existsSync(INSTALLED_LOG)) fs.writeFileSync(INSTALLED_LOG, '[]');
+    const data = JSON.parse(fs.readFileSync(INSTALLED_LOG));
+    const relativePath = path.join('commands', pluginInfo.category, `${pluginInfo.name}.js`).replace(/\\/g, '/');
+    // Remove duplicate if exists
+    const filtered = data.filter(p => p.path !== relativePath);
+    filtered.push({
+      path: relativePath,
+      name: pluginInfo.name,
+      category: pluginInfo.category,
+      by: String(installerJid || '').split('@')[0] || 'unknown',
+      ts: Date.now()
+    });
+    fs.writeFileSync(INSTALLED_LOG, JSON.stringify(filtered, null, 2));
+    console.log(`[INSTALL] Registered: ${relativePath}`);
+  } catch (e) {
+    console.error('[INSTALL] Failed to save log:', e.message);
   }
 }
 
@@ -85,7 +95,6 @@ module.exports = {
 
   async execute(sock, msg, args, extra) {
     try {
-      // Check for restart flag
       let autoRestart = false;
       const filteredArgs = args.filter(arg => {
         if (arg === '-r' || arg === '--restart') {
@@ -98,21 +107,17 @@ module.exports = {
       let content = null;
       let method = null;
 
-      // --- Method 1: URL from arguments ---
       if (filteredArgs.length > 0) {
         const inputUrl = filteredArgs[0].trim();
         const rawUrl = gistToRawUrl(inputUrl);
         method = 'url';
         await extra.react('⏳');
-
         const response = await axios.get(rawUrl, {
           timeout: 15000,
           headers: { 'User-Agent': 'ProBoy-MD-Installer' }
         });
         content = response.data;
-      }
-      // --- Method 2: Reply to a file message ---
-      else {
+      } else {
         const quoted = msg.message?.extendedTextMessage?.contextInfo?.quotedMessage;
         if (!quoted) {
           return extra.reply('❌ Please reply to a `.js` file or provide a Gist URL.\n' + this.usage);
@@ -127,7 +132,6 @@ module.exports = {
         }
         method = 'reply';
         await extra.react('⏳');
-
         const buffer = await downloadMediaMessage(
           { key: msg.key, message: quoted },
           'buffer',
@@ -139,80 +143,55 @@ module.exports = {
 
       if (!content) throw new Error('Failed to retrieve plugin content.');
 
-      // --- Parse plugin metadata ---
       const pluginInfo = parsePlugin(content);
-      if (!pluginInfo.name) {
-        throw new Error('Could not determine plugin name. Ensure the plugin exports a valid command object.');
-      }
+      if (!pluginInfo.name) throw new Error('Could not determine plugin name.');
       if (!pluginInfo.category || !validCategories.includes(pluginInfo.category)) {
         throw new Error(`Invalid or missing category. Allowed: ${validCategories.join(', ')}`);
       }
 
-      // Determine target folder and file
       const targetDir = path.join(__dirname, '..', pluginInfo.category);
       const targetFile = path.join(targetDir, `${pluginInfo.name}.js`);
-
-      // Create folder if needed
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-
-      // Write file
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
       fs.writeFileSync(targetFile, content, 'utf8');
 
-      // --- Test the plugin by requiring it (catch errors early) ---
       try {
-        // Clear the require cache to force a fresh load
         delete require.cache[require.resolve(targetFile)];
         require(targetFile);
       } catch (loadErr) {
-        // Plugin is invalid: delete it and abort
         fs.unlinkSync(targetFile);
         throw new Error(`Plugin failed to load: ${loadErr.message}`);
       }
 
-      // --- Hot-load without restarting ---
+      // ── Register the installed plugin ──
+      saveInstalledPlugin(pluginInfo, extra.sender);
+
       let hotLoaded = false;
       try {
         const handler = require('../../handler');
         if (typeof handler.reloadCommands === 'function') {
           handler.reloadCommands();
           hotLoaded = true;
-
           const installed = handler.commands?.get?.(pluginInfo.name);
           if (installed && typeof installed.init === 'function') {
-            // Init on all connected numbers (so plugin works everywhere)
             try {
               const manager = globalThis.ProBoySessionManager;
               const socks = manager?.getActiveSocks?.() || [sock];
-              for (const s of socks) {
-                try { await installed.init(s); } catch {}
-              }
-            } catch {
-              try { await installed.init(sock); } catch {}
-            }
+              for (const s of socks) try { await installed.init(s); } catch {}
+            } catch { try { await installed.init(sock); } catch {} }
           }
         }
-      } catch {
-        hotLoaded = false;
-      }
+      } catch {}
 
-      // Build success message
       const details = [
         '✅ Plugin installed successfully!',
         `📁 Category: ${pluginInfo.category}`,
         `📄 File: ${pluginInfo.name}.js`,
         `🔖 Command: ${config.prefix || '.'}${pluginInfo.name}`
       ];
-      if (pluginInfo.aliases?.length) {
-        details.push(`🔁 Aliases: ${pluginInfo.aliases.map(a => `${config.prefix || '.'}${a}`).join(', ')}`);
-      }
-      if (pluginInfo.description) {
-        details.push(`📝 ${pluginInfo.description}`);
-      }
-      if (pluginInfo.usage) {
-        details.push(`⚙️ Usage: ${pluginInfo.usage}`);
-      }
+      if (pluginInfo.aliases?.length) details.push(`🔁 Aliases: ${pluginInfo.aliases.map(a => `${config.prefix || '.'}${a}`).join(', ')}`);
+      if (pluginInfo.description) details.push(`📝 ${pluginInfo.description}`);
+      if (pluginInfo.usage) details.push(`⚙️ Usage: ${pluginInfo.usage}`);
+
       const flags = [];
       if (pluginInfo.ownerOnly) flags.push('👑 Owner only');
       if (pluginInfo.modOnly) flags.push('🛡️ Mod only');
@@ -227,7 +206,7 @@ module.exports = {
         await sock.sendMessage(extra.from, { text: ui.box('Plugin', details, `🕒 ${new Date().toLocaleString()}`) }, { quoted: msg });
         await extra.react('✅');
         await notifyPrimaryOwner(sock, pluginInfo, extra.sender);
-        restartBot(); // This will exit the process after a short delay
+        restartBot();
       } else {
         if (hotLoaded) details.push('✅ Loaded (no restart needed).');
         else details.push('🔄 Restart required to load.');
@@ -239,40 +218,29 @@ module.exports = {
     } catch (error) {
       console.error('Install error:', error);
       let errorMsg = '❌ Installation failed: ';
-      if (error.response) {
-        errorMsg += `HTTP ${error.response.status} – ${error.response.statusText}`;
-      } else {
-        errorMsg += error.message;
-      }
+      if (error.response) errorMsg += `HTTP ${error.response.status} – ${error.response.statusText}`;
+      else errorMsg += error.message;
       await extra.reply(errorMsg);
       await extra.react('❌');
     }
   }
 };
 
-/**
- * Parse plugin metadata from the exported object.
- */
 function parsePlugin(content) {
   const info = {};
-
   const exportMatch = content.match(/module\.exports\s*=\s*({[\s\S]*?})/);
   if (!exportMatch) return info;
-
   const objStr = exportMatch[1];
-
   const extractString = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*['"]([^'"]+)['"]`);
     const match = objStr.match(regex);
     return match ? match[1] : null;
   };
-
   const extractBoolean = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*(true|false)`);
     const match = objStr.match(regex);
     return match ? match[1] === 'true' : false;
   };
-
   const extractArray = (key) => {
     const regex = new RegExp(`${key}\\s*:\\s*\\[([\\s\\S]*?)\\]`);
     const match = objStr.match(regex);
@@ -281,12 +249,9 @@ function parsePlugin(content) {
     const items = [];
     const itemRegex = /['"]([^'"]+)['"]/g;
     let itemMatch;
-    while ((itemMatch = itemRegex.exec(arrStr)) !== null) {
-      items.push(itemMatch[1]);
-    }
+    while ((itemMatch = itemRegex.exec(arrStr)) !== null) items.push(itemMatch[1]);
     return items;
   };
-
   info.name = extractString('name');
   info.category = extractString('category');
   info.description = extractString('description');
@@ -298,6 +263,5 @@ function parsePlugin(content) {
   info.privateOnly = extractBoolean('privateOnly');
   info.adminOnly = extractBoolean('adminOnly');
   info.botAdminNeeded = extractBoolean('botAdminNeeded');
-
   return info;
 }
