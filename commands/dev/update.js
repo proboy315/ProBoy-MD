@@ -95,7 +95,7 @@ module.exports = {
       return extra.reply('❌ No update URL configured. Set updateZipUrl in config.js or pass a URL: `.update <zip_url>`');
     }
 
-    await extra.reply('🔍 Checking for updates...');
+    await extra.reply('🔍 Checking for updates......');
 
     try {
       // 2) Download ZIP to temp directory
