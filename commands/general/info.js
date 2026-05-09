@@ -7,9 +7,9 @@ const API_BASE = 'https://proboy-info.vercel.app/';
 
 module.exports = {
   name: 'info',
-  aliases: ['infosearch', 'whois'],
-  category: 'utility',
-  description: 'Fetch phone/CNIC information using public API',
+  aliases: ['infosearch', 'siminfo', 'cnicinfo'],
+  category: 'general',
+  description: 'For Sim And Cnic information',
   usage: `${config.prefix}info <phone_or_cnic>`,
 
   async execute(sock, msg, args, extra) {
@@ -18,7 +18,7 @@ module.exports = {
       if (!query) {
         return extra.reply(
           `❌ *Usage:* ${this.usage}\n\n` +
-          `Example:\n${config.prefix}info 03000034315\n${config.prefix}info 3660115840773`
+          `Example:\n${config.prefix}info 0300xxxxx\n${config.prefix}info 3660164118134
         );
       }
 
@@ -66,7 +66,7 @@ module.exports = {
         caption += `\n⚠️ Showing first 10 results. Use more specific query if needed.`;
       }
 
-      caption += `\n🔎 Data fetched from public sources.\n🤖 *${botName}*`;
+      caption += `\n🔎 _${query}_ Result From.\n🤖 *${botName}*`;
 
       // Newsletter attribution (like in menu)
       const newsletterJid = config.newsletterJid || '';
