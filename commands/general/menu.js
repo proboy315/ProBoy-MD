@@ -1,6 +1,6 @@
 /**
- * Menu Command - Display all available commands
- * Styled as per new minimal design
+ * Menu Command - Fahdii-MD Inspired Premium Design
+ * Logic: Original | Design: Modern Bordered
  */
 
 const config = require('../../config');
@@ -10,16 +10,16 @@ const path = require('path');
 const { sendButtons } = require('../../utils/button');
 
 const CATEGORY_ORDER = [
-  { key: 'general', name: 'GENERAL COMMANDS' },
-  { key: 'ai', name: 'AI COMMANDS' },
-  { key: 'group', name: 'GROUP COMMANDS' },
-  { key: 'dev', name: 'DEV COMMANDS' },
-  { key: 'owner', name: 'DEV COMMANDS (LEGACY)' },
-  { key: 'media', name: 'MEDIA COMMANDS' },
-  { key: 'fun', name: 'FUN COMMANDS' },
-  { key: 'utility', name: 'UTILITY COMMANDS' },
-  { key: 'anime', name: 'ANIME COMMANDS' },
-  { key: 'textmaker', name: 'TEXTMAKER COMMANDS' }
+  { key: 'general', name: 'MAIN' },
+  { key: 'ai', name: 'AI' },
+  { key: 'group', name: 'GROUP' },
+  { key: 'dev', name: 'OWNER' },
+  { key: 'owner', name: 'OWNER (LEGACY)' },
+  { key: 'media', name: 'DOWNLOAD' },
+  { key: 'fun', name: 'FUN' },
+  { key: 'utility', name: 'UTILITY' },
+  { key: 'anime', name: 'ANIME' },
+  { key: 'textmaker', name: 'TOOLS' }
 ];
 
 const collectCategories = (commands) => {
@@ -38,21 +38,13 @@ const collectCategories = (commands) => {
 };
 
 const buildHeader = ({ commands, owner, userTag, botName }) => {
-  let text = `╭━  ${botName}  ━╮\n`;
-  text += `┃  Owner: ${owner}\n`;
-  text += `┃  User: @${userTag}\n`;
-  text += `┃  Prefix: ${config.prefix}\n`;
-  text += `┃  Cmds: ${commands.size}\n`;
-  text += `╰━━━━━━━━━━━━━━━╯\n`;
-  return text;
-};
-
-const buildSimpleCategoryMenu = ({ commands, categories, owner, userTag, botName }) => {
-  const available = CATEGORY_ORDER.filter(c => (categories[c.key] || []).length > 0);
-  let text = buildHeader({ commands, owner, userTag, botName });
-  text += '\n';
-  text += 'Select Category\n';
-  for (const cat of available) text += `${cat.key}\n`;
+  let text = `*╭┈───〔 ${botName.toUpperCase()} 〕┈───⊷*\n`;
+  text += `*├✦ Owner:* ${owner}\n`;
+  text += `*├✦ User:* @${userTag}\n`;
+  text += `*├✦ Commands:* ${commands.size}\n`;
+  text += `*├✦ Prefix:* ${config.prefix}\n`;
+  text += `*├✦ Version:* ${config.version || '1.0.0'}\n`;
+  text += `*╰───────────────────⊷*\n`;
   return text;
 };
 
@@ -60,19 +52,23 @@ const buildCategoryCommandsText = ({ commands, categories, owner, userTag, botNa
   const cat = CATEGORY_ORDER.find(c => c.key === categoryKey);
   const cmdList = categories[categoryKey] || [];
 
-  let text = buildHeader({ commands, owner, userTag, botName });
-  text += '\n';
+  let text = buildHeader({ commands, owner, userTag, botName }) + '\n';
 
   if (!cat || !cmdList.length) {
-    text += `❌ Category not found: ${categoryKey}\n`;
+    text += `_❌ Category not found_\n`;
     return text;
   }
 
-  text += `╭─❖ ${cat.name} \n│ \n`;
+  text += `\`『 ${cat.name} 』\`\n`;
+  text += `╭───────────────────⊷\n`;
   cmdList.forEach(cmd => {
-    text += `│ -   ${config.prefix}${cmd.name}\n`;
+    // Converting command name to small caps style like your example
+    const smallCapsName = cmd.name.toLowerCase().replace(/[a-z]/g, char => 
+      "ᴀʙᴄᴅᴇғɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"[char.charCodeAt(0) - 97] || char
+    );
+    text += `*┋ ⬡ ${smallCapsName}*\n`;
   });
-  text += '╰──────────────';
+  text += `╰───────────────────⊷`;
   return text;
 };
 
@@ -82,55 +78,48 @@ const buildFullMenuText = ({ commands, categories, owner, userTag, botName, cate
     : CATEGORY_ORDER;
 
   let text = buildHeader({ commands, owner, userTag, botName }) + '\n';
+  
   for (const cat of filtered) {
     const cmdList = categories[cat.key];
     if (!cmdList || !cmdList.length) continue;
-    text += `╭─❖ ${cat.name} \n│ \n`;
+    
+    text += `\`『 ${cat.name} 』\`\n`;
+    text += `╭───────────────────⊷\n`;
     cmdList.forEach(cmd => {
-      text += `│ -   ${config.prefix}${cmd.name}\n`;
+      const smallCapsName = cmd.name.toLowerCase().replace(/[a-z]/g, char => 
+        "ᴀʙᴄᴅᴇғɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"[char.charCodeAt(0) - 97] || char
+      );
+      text += `*┋ ⬡ ${smallCapsName}*\n`;
     });
-    text += '╰──────────────\n\n';
+    text += `╰───────────────────⊷\n\n`;
   }
-  text += `💡 Type ${config.prefix}help <command> for more info\n`;
-  text += `🌟 Bot Version: ${config.version || '1.0.0'}\n`;
+  
+  text += `> *©  Tᴇᴄʜ ʙʏ Fᴀʜᴅɪɪ Tᴏᴏʟs*`;
   return text;
-};
-
-const getChannelLink = () => {
-  return (
-    config.social?.channel ||
-    config.social?.whatsappChannel ||
-    process.env.WHATSAPP_CHANNEL_URL ||
-    config.social?.website ||
-    'https://proboy.vercel.app'
-  );
 };
 
 const sendMenuMessage = async (sock, msg, extra, text, botName) => {
   const imagePath = path.join(__dirname, '../../utils/bot_image.jpg');
+  const contextInfo = {
+    forwardingScore: 1,
+    isForwarded: true,
+    forwardedNewsletterMessageInfo: {
+      newsletterJid: config.newsletterJid || '98136462770302@lid',
+      newsletterName: `Tech by Fahdii | ${botName}`,
+      serverMessageId: -1
+    }
+  };
+
   if (fs.existsSync(imagePath)) {
-    const imageBuffer = fs.readFileSync(imagePath);
     await sock.sendMessage(extra.from, {
-      image: imageBuffer,
+      image: fs.readFileSync(imagePath),
       caption: text,
       mentions: [extra.sender],
-      contextInfo: {
-        forwardingScore: 1,
-        isForwarded: true,
-        forwardedNewsletterMessageInfo: {
-          newsletterJid: config.newsletterJid || '120363161513685998@newsletter',
-          newsletterName: botName,
-          serverMessageId: -1
-        }
-      }
+      contextInfo
     }, { quoted: msg });
-    return;
+  } else {
+    await sock.sendMessage(extra.from, { text, mentions: [extra.sender], contextInfo }, { quoted: msg });
   }
-
-  await sock.sendMessage(extra.from, {
-    text,
-    mentions: [extra.sender]
-  }, { quoted: msg });
 };
 
 module.exports = {
@@ -149,69 +138,41 @@ module.exports = {
       const db = extra.database;
       const buttonMode = !!db?.getGlobalSetting?.('menuButtonsEnabled');
 
-      // Get owner name and bot name
       const ownerNames = Array.isArray(config.ownerName) ? config.ownerName : [config.ownerName];
-      const displayOwner = ownerNames[0] || 'Bot Owner';
-      const botName = config.botName || 'ProBoy-MD';
+      const displayOwner = ownerNames[0] || 'Fahad Arain';
+      const botName = config.botName || 'Fahdii-MD';
       const userTag = extra.sender.split('@')[0];
-      const channelLink = getChannelLink();
+      const channelLink = config.social?.whatsappChannel || 'https://proboy.vercel.app';
 
-      if (buttonMode) {
-        if (!categoryKey) {
-          const menuText = buildSimpleCategoryMenu({ commands, categories, owner: displayOwner, userTag, botName });
-          await sendMenuMessage(sock, msg, extra, menuText, botName);
+      if (buttonMode && !categoryKey) {
+        const menuText = buildHeader({ commands, owner: displayOwner, userTag, botName }) + "\nSelect a category below:";
+        await sendMenuMessage(sock, msg, extra, menuText, botName);
 
-          const categoryButtons = CATEGORY_ORDER
-            .filter(c => (categories[c.key] || []).length > 0)
-            .map(c => ({
-              type: 'quick_reply',
-              displayText: c.key.toUpperCase().slice(0, 20),
-              id: `cmd_menu_cat_${c.key}`
-            }));
+        const categoryButtons = CATEGORY_ORDER
+          .filter(c => (categories[c.key] || []).length > 0)
+          .map(c => ({
+            type: 'quick_reply',
+            displayText: c.name,
+            id: `cmd_menu_cat_${c.key}`
+          }));
 
-          for (let i = 0; i < categoryButtons.length; i += 3) {
-            const chunk = categoryButtons.slice(i, i + 3);
-            await sendButtons(sock, extra.from, {
-              text: i === 0 ? 'Select category' : 'More categories',
-              footer: botName,
-              buttons: chunk,
-              quoted: msg
-            });
-          }
-
+        for (let i = 0; i < categoryButtons.length; i += 3) {
           await sendButtons(sock, extra.from, {
-            text: 'Channel',
-            footer: botName,
-            buttons: [{ type: 'url', displayText: 'View Channel', url: channelLink }],
+            text: i === 0 ? 'Categories' : 'More',
+            footer: 'Tech by Fahdii Tools',
+            buttons: categoryButtons.slice(i, i + 3),
             quoted: msg
           });
-          return;
         }
-
-        const categoryText = buildCategoryCommandsText({
-          commands,
-          categories,
-          owner: displayOwner,
-          userTag,
-          botName,
-          categoryKey
-        });
-        await sendMenuMessage(sock, msg, extra, categoryText, botName);
-
-        await sendButtons(sock, extra.from, {
-          text: 'Menu Actions',
-          footer: botName,
-          buttons: [
-            { type: 'quick_reply', displayText: 'BACK', id: 'cmd_menu_home' },
-            { type: 'url', displayText: 'View Channel', url: channelLink }
-          ],
-          quoted: msg
-        });
         return;
       }
 
-      const menuText = buildFullMenuText({ commands, categories, owner: displayOwner, userTag, botName, categoryKey });
+      const menuText = categoryKey 
+        ? buildCategoryCommandsText({ commands, categories, owner: displayOwner, userTag, botName, categoryKey })
+        : buildFullMenuText({ commands, categories, owner: displayOwner, userTag, botName });
+
       await sendMenuMessage(sock, msg, extra, menuText, botName);
+
     } catch (error) {
       console.error('Menu error:', error);
       await extra.reply(`❌ Error: ${error.message}`);
