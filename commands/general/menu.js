@@ -1,5 +1,5 @@
 /**
- * Menu Command - Fahdii-MD Inspired Premium Design
+ * Menu Command -  Inspired Premium Design
  * Logic: Original | Design: Modern Bordered
  */
 
@@ -66,7 +66,7 @@ const buildCategoryCommandsText = ({ commands, categories, owner, userTag, botNa
     const smallCapsName = cmd.name.toLowerCase().replace(/[a-z]/g, char => 
       "ᴀʙᴄᴅᴇғɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"[char.charCodeAt(0) - 97] || char
     );
-    text += `*┋ ⬡ ${smallCapsName}*\n`;
+    text += `*┋ ✦ ${config.prefix} ${smallCapsName}*\n`;
   });
   text += `╰───────────────────⊷`;
   return text;
@@ -89,12 +89,12 @@ const buildFullMenuText = ({ commands, categories, owner, userTag, botName, cate
       const smallCapsName = cmd.name.toLowerCase().replace(/[a-z]/g, char => 
         "ᴀʙᴄᴅᴇғɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ"[char.charCodeAt(0) - 97] || char
       );
-      text += `*┋ ⬡ ${smallCapsName}*\n`;
+      text += `*┋ ✦ ${config.prefix} ${smallCapsName}*\n`;
     });
     text += `╰───────────────────⊷\n\n`;
   }
   
-  text += `> *©  Tᴇᴄʜ ʙʏ Fᴀʜᴅɪɪ Tᴏᴏʟs*`;
+  text += `> *©  ${config.botName}*`;
   return text;
 };
 
@@ -105,7 +105,7 @@ const sendMenuMessage = async (sock, msg, extra, text, botName) => {
     isForwarded: true,
     forwardedNewsletterMessageInfo: {
       newsletterJid: config.newsletterJid || '98136462770302@lid',
-      newsletterName: `Tech by Fahdii | ${botName}`,
+      newsletterName: `| ${botName}`,
       serverMessageId: -1
     }
   };
@@ -140,7 +140,7 @@ module.exports = {
 
       const ownerNames = Array.isArray(config.ownerName) ? config.ownerName : [config.ownerName];
       const displayOwner = ownerNames[0] || 'Fahad Arain';
-      const botName = config.botName || 'Fahdii-MD';
+      const botName = config.botName || 'ProBoy-MD';
       const userTag = extra.sender.split('@')[0];
       const channelLink = config.social?.whatsappChannel || 'https://proboy.vercel.app';
 
@@ -159,7 +159,7 @@ module.exports = {
         for (let i = 0; i < categoryButtons.length; i += 3) {
           await sendButtons(sock, extra.from, {
             text: i === 0 ? 'Categories' : 'More',
-            footer: 'Tech by Fahdii Tools',
+            footer: '${config.prefix} ',
             buttons: categoryButtons.slice(i, i + 3),
             quoted: msg
           });
