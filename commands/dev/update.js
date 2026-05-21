@@ -1,175 +1,181 @@
 /**
- * Update Command – Auto‑strip ZIP root folder, preserve custom installed plugins.
- * Uses system `unzip` (no extra npm modules).
+ * Update Command - Fetch latest code via ZIP (Owner Only)
+ * Preserves runtime/state dirs: node_modules, session, tmp, temp, database, config.js
  */
 
-const config = require('../../config');
+const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const axios = require('axios');
-const { execSync } = require('child_process');
+const https = require('https');
+const http = require('http');
+const config = require('../../config');
 
-// ─── Config ─────────────────────────────────────────
-const INSTALLED_LOG = path.join(__dirname, '../../database/installed_plugins.json');
-const PRESERVED_DIRS = [
-  'node_modules', 'session', 'sessions', 'tmp', 'temp',
-  'database', 'config.js', 'core-manifest.json', 'installed_plugins.json'
-];
+const MAX_REDIRECTS = 5;
 
-// ─── Helpers ────────────────────────────────────────
-function loadInstalledPaths() {
-  try {
-    if (!fs.existsSync(INSTALLED_LOG)) return [];
-    const list = JSON.parse(fs.readFileSync(INSTALLED_LOG));
-    return (list || []).map(e => e.path).filter(Boolean);
-  } catch { return []; }
+function run(cmd) {
+  return new Promise((resolve, reject) => {
+    exec(cmd, { windowsHide: true }, (err, stdout, stderr) => {
+      if (err) return reject(new Error((stderr || stdout || err.message || '').toString()));
+      resolve((stdout || '').toString());
+    });
+  });
 }
 
-async function notifyOwner(sock, text) {
+async function extractZip(zipPath, outDir) {
+  if (process.platform === 'win32') {
+    const cmd = `powershell -NoProfile -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${outDir.replace(/\\\\/g, '/')}' -Force"`;
+    await run(cmd);
+    return;
+  }
+  // Try unzip, then 7z, then busybox unzip
   try {
-    const ownerNum = (config.ownerNumber && config.ownerNumber[0]) || '';
-    if (!ownerNum) return;
-    const jid = `${ownerNum.replace(/\D/g, '')}@s.whatsapp.net`;
-    await sock.sendMessage(jid, { text });
-  } catch {}
-}
-
-function restartBot() {
-  try {
-    execSync('pm2 restart all', { stdio: 'ignore' });
+    await run('command -v unzip');
+    await run(`unzip -o '${zipPath}' -d '${outDir}'`);
     return;
   } catch {}
-  setTimeout(() => process.exit(0), 1000);
+  try {
+    await run('command -v 7z');
+    await run(`7z x -y '${zipPath}' -o'${outDir}'`);
+    return;
+  } catch {}
+  try {
+    await run('busybox unzip -h');
+    await run(`busybox unzip -o '${zipPath}' -d '${outDir}'`);
+    return;
+  } catch {}
+  throw new Error('No unzip tool found (unzip/7z/busybox). Please install one or use a panel with unzip support.');
+}
+
+function downloadFile(url, dest, visited = new Set()) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (visited.has(url) || visited.size > MAX_REDIRECTS) {
+        return reject(new Error('Too many redirects'));
+      }
+      visited.add(url);
+
+      const client = url.startsWith('https://') ? https : http;
+      const req = client.get(url, {
+        headers: {
+          'User-Agent': 'KnightBot-Updater/1.0',
+          'Accept': '*/*'
+        }
+      }, res => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode)) {
+          const location = res.headers.location;
+          if (!location) return reject(new Error(`HTTP ${res.statusCode} without Location`));
+          const nextUrl = new URL(location, url).toString();
+          res.resume();
+          return downloadFile(nextUrl, dest, visited).then(resolve).catch(reject);
+        }
+
+        if (res.statusCode !== 200) {
+          return reject(new Error(`HTTP ${res.statusCode}`));
+        }
+
+        const file = fs.createWriteStream(dest);
+        res.pipe(file);
+        file.on('finish', () => file.close(resolve));
+        file.on('error', err => {
+          try { file.close(() => {}); } catch {}
+          fs.unlink(dest, () => reject(err));
+        });
+      });
+      req.on('error', err => {
+        fs.unlink(dest, () => reject(err));
+      });
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+function copyRecursive(src, dest, ignore = [], relative = '', outList = []) {
+  if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src)) {
+    if (ignore.includes(entry)) continue;
+    const s = path.join(src, entry);
+    const d = path.join(dest, entry);
+    const stat = fs.lstatSync(s);
+    if (stat.isDirectory()) {
+      copyRecursive(s, d, ignore, path.join(relative, entry), outList);
+    } else {
+      fs.copyFileSync(s, d);
+      if (outList) outList.push(path.join(relative, entry).replace(/\\\\/g, '/'));
+    }
+  }
+}
+
+async function updateViaZip(zipUrl) {
+  const tmpDir = path.join(process.cwd(), 'tmp');
+  if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+  const zipPath = path.join(tmpDir, 'update.zip');
+  const extractTo = path.join(tmpDir, 'update_extract');
+
+  await downloadFile(zipUrl, zipPath);
+
+  if (fs.existsSync(extractTo)) fs.rmSync(extractTo, { recursive: true, force: true });
+  await extractZip(zipPath, extractTo);
+
+  const entries = fs.readdirSync(extractTo);
+  const rootCandidate = entries.length === 1 ? path.join(extractTo, entries[0]) : extractTo;
+  const srcRoot = fs.existsSync(rootCandidate) && fs.lstatSync(rootCandidate).isDirectory() ? rootCandidate : extractTo;
+
+  const ignore = [
+    'node_modules',
+    '.git',
+    'session',
+    'tmp',
+    'temp',
+    'database',
+    'config.js'
+  ];
+  const copied = [];
+  copyRecursive(srcRoot, process.cwd(), ignore, '', copied);
+
+  try { fs.rmSync(extractTo, { recursive: true, force: true }); } catch {}
+  try { fs.rmSync(zipPath, { force: true }); } catch {}
+
+  return { copiedFiles: copied };
 }
 
 module.exports = {
   name: 'update',
   aliases: ['upgrade'],
-  category: 'dev',
-  description: 'Update bot from ZIP URL (preserves custom plugins, auto‑detects base folder)',
+  category: 'owner',
+  description: 'Update bot from configured ZIP URL (Owner Only)',
   usage: '.update [optional_zip_url]',
   ownerOnly: true,
 
   async execute(sock, msg, args, extra) {
     const chatId = msg.key.remoteJid;
     const zipUrl = (args[0] || config.updateZipUrl || process.env.UPDATE_ZIP_URL || '').trim();
+
     if (!zipUrl) {
       return extra.reply('❌ No update URL configured. Set updateZipUrl in config.js or pass a URL: `.update <zip_url>`');
     }
 
-    await extra.reply('🔄 Updating the bot, please wait…');
-
     try {
-      // 1. Download ZIP
-      const tmpDir = path.join(__dirname, '../../tmp');
-      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
-      const zipPath = path.join(tmpDir, `update_${Date.now()}.zip`);
-      const extractDir = path.join(tmpDir, `update_extract_${Date.now()}`);
+      await extra.reply('🔄 Updating the bot, please wait…');
 
-      const response = await axios.get(zipUrl, {
-        responseType: 'arraybuffer',
-        timeout: 30000,
-        headers: { 'User-Agent': 'ProBoy-MD-Updater' }
-      });
-      fs.writeFileSync(zipPath, Buffer.from(response.data));
+      const { copiedFiles } = await updateViaZip(zipUrl);
 
-      // 2. Extract with system unzip
+      const summary = copiedFiles.length
+        ? `✅ Update complete. Files updated: ${copiedFiles.length}`
+        : '✅ Update complete. No files needed updating.';
+
+      await sock.sendMessage(chatId, { text: `${summary}\nRestarting…` }, { quoted: msg });
+
+      // Attempt restart via pm2 if available, else exit to allow panel auto-restart
       try {
-        execSync(`unzip -o -q "${zipPath}" -d "${extractDir}"`, { stdio: 'pipe' });
-      } catch {
-        throw new Error('System unzip command not found. Install unzip on your server.');
-      }
+        await run('pm2 restart all');
+        return;
+      } catch {}
 
-      // 3. Detect base folder inside extractDir
-      let basePrefix = '';
-      const rootEntries = fs.readdirSync(extractDir, { withFileTypes: true });
-      const dirs = rootEntries.filter(e => e.isDirectory());
-      if (dirs.length === 1) {
-        // Probably the GitHub root folder (e.g., ProBoy-MD-main)
-        basePrefix = dirs[0].name + '/';
-      }
-      // If there are multiple folders/files at root, basePrefix remains '' (no stripping)
-
-      const actualRoot = path.join(extractDir, basePrefix);
-      if (!fs.existsSync(actualRoot)) throw new Error('Extracted folder structure unexpected.');
-
-      // 4. Load custom installed file paths
-      const skipPaths = loadInstalledPaths();
-      const root = path.join(__dirname, '../..');
-
-      const updated = [];
-      const added = [];
-      const skipped = [];
-
-      // 5. Walk the extracted (unprefixed) folder
-      const walkDir = (dir, baseRelative = '') => {
-        const entries = fs.readdirSync(dir, { withFileTypes: true });
-        for (const entry of entries) {
-          const fullPath = path.join(dir, entry.name);
-          const relative = path.join(baseRelative, entry.name).replace(/\\/g, '/');
-          if (entry.isDirectory()) {
-            walkDir(fullPath, relative);
-          } else {
-            // Skip preserved directories/files
-            if (PRESERVED_DIRS.some(d => relative === d || relative.startsWith(d + '/'))) {
-              skipped.push(relative);
-              return;
-            }
-            // Skip custom installed plugins
-            if (skipPaths.includes(relative)) {
-              skipped.push(relative);
-              return;
-            }
-
-            const targetPath = path.join(root, relative);
-            const targetDir = path.dirname(targetPath);
-            if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-
-            const existed = fs.existsSync(targetPath);
-
-            // Copy file content
-            fs.copyFileSync(fullPath, targetPath);
-
-            if (existed) updated.push(relative);
-            else added.push(relative);
-          }
-        }
-      };
-
-      walkDir(actualRoot, '');
-
-      // 6. Cleanup
-      try { fs.unlinkSync(zipPath); } catch {}
-      try { fs.rmSync(extractDir, { recursive: true, force: true }); } catch {}
-
-      // 7. Build summary
-      const lines = [];
-      lines.push(`✅ *Update complete*`);
-      lines.push(`📥 Updated: ${updated.length} | Added: ${added.length} | Skipped: ${skipped.length}`);
-      if (skipPaths.length && skipped.length) lines.push(`🛡️ Custom plugins preserved: ${skipPaths.length}`);
-
-      const sample = [...updated.slice(0, 15), ...added.slice(0, 15)].slice(0, 25);
-      if (sample.length) {
-        lines.push('');
-        lines.push('*Changed files (sample):*');
-        for (const f of sample) lines.push(`- \`${f}\``);
-        if (updated.length + added.length > sample.length) {
-          lines.push(`- ...and ${updated.length + added.length - sample.length} more`);
-        }
-      }
-
-      const summary = lines.join('\n') + '\n\n🔄 Restarting now…';
-
-      // 8. Send to chat & owner
-      await sock.sendMessage(chatId, { text: summary }, { quoted: msg });
-      await notifyOwner(sock, summary);
-
-      // 9. Restart
-      restartBot();
+      setTimeout(() => process.exit(0), 500);
     } catch (error) {
-      await sock.sendMessage(chatId, {
-        text: `❌ Update failed:\n${String(error.message || error)}`
-      }, { quoted: msg });
+      console.error('Update failed:', error);
+      await sock.sendMessage(chatId, { text: `❌ Update failed:\n${String(error.message || error)}` }, { quoted: msg });
     }
   }
 };
