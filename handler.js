@@ -1,9 +1,10 @@
 /**
  * Message Handler - Processes incoming messages and executes commands
  * + Integrated Button Support (FIXED for quick_reply)
+ * + PERFORMANCE FIX: removed config reload on every message
  */
 
-const config = require('./config');
+const config = require('./config');          // ✅ loaded once at startup
 const defaultDatabase = require('./database');
 const { loadCommands } = require('./utils/commandLoader');
 const { addMessage } = require('./utils/groupstats');
@@ -495,41 +496,36 @@ const handleMessage = async (sock, msg) => {
       return false;
     }
     
-    // Auto-React System
-    try {
-      delete require.cache[require.resolve('./config')];
-      const config = require('./config');
+    // ========== PERFORMANCE FIX: removed config reload ==========
+    // config is already loaded at the top, use it directly.
+    // Auto-React System (using cached config)
+    if (config.autoReact && msg.message && !msg.key.fromMe) {
+      const content = msg.message.ephemeralMessage?.message || msg.message;
+      const text =
+        content.conversation ||
+        content.extendedTextMessage?.text ||
+        '';
 
-      if (config.autoReact && msg.message && !msg.key.fromMe) {
-        const content = msg.message.ephemeralMessage?.message || msg.message;
-        const text =
-          content.conversation ||
-          content.extendedTextMessage?.text ||
-          '';
+      const jid = msg.key.remoteJid;
+      const emojis = ['❤️','🔥','👌','💀','😁','✨','👍','🤨','😎','😂','🤝','💫'];
+      
+      const mode = config.autoReactMode || 'bot';
 
-        const jid = msg.key.remoteJid;
-        const emojis = ['❤️','🔥','👌','💀','😁','✨','👍','🤨','😎','😂','🤝','💫'];
-        
-        const mode = config.autoReactMode || 'bot';
-
-        if (mode === 'bot') {
-          const prefixList = ['.', '/', '#'];
-          if (prefixList.includes(text?.trim()[0])) {
-            await sock.sendMessage(jid, {
-              react: { text: '⏳', key: msg.key }
-            });
-          }
-        }
-
-        if (mode === 'all') {
-          const rand = emojis[Math.floor(Math.random() * emojis.length)];
+      if (mode === 'bot') {
+        const prefixList = ['.', '/', '#'];
+        if (prefixList.includes(text?.trim()[0])) {
           await sock.sendMessage(jid, {
-            react: { text: rand, key: msg.key }
+            react: { text: '⏳', key: msg.key }
           });
         }
       }
-    } catch (e) {
-      console.error('[AutoReact Error]', e.message);
+
+      if (mode === 'all') {
+        const rand = emojis[Math.floor(Math.random() * emojis.length)];
+        await sock.sendMessage(jid, {
+          react: { text: rand, key: msg.key }
+        });
+      }
     }
     
     const content = getMessageContent(msg);
@@ -826,8 +822,6 @@ const handleMessage = async (sock, msg) => {
     body = (body || '').trim();
     
     // ... (rest of the handler remains exactly the same) ...
-    // (I'll include the rest of the file below for completeness)
-    
     if (isGroup) {
       const groupSettings = getDb(sock).getGroupSettings(from);
       if (groupSettings.antiall) {
@@ -1486,9 +1480,6 @@ const handleAntigroupmention = async (sock, msg, groupMetadata) => {
 const initializeAntiCall = (sock) => {
   sock.ev.on('call', async (calls) => {
     try {
-      delete require.cache[require.resolve('./config')];
-      const config = require('./config');
-      
       if (!config.defaultGroupSettings.anticall) return;
 
       for (const call of calls) {
