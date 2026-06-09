@@ -2,9 +2,11 @@
  * Message Handler - Processes incoming messages and executes commands
  * + Integrated Button Support (FIXED for quick_reply)
  * + PERFORMANCE FIX: removed config reload on every message
+ * + CHANNEL SUPPORT: commands & hooks now work inside newsletters (where bot is admin)
+ * + CHANNEL AUTO‑REACT: random emoji on incoming channel posts (on/off via DB)
  */
 
-const config = require('./config');          // ✅ loaded once at startup
+const config = require('./config');          // loaded once at startup
 const defaultDatabase = require('./database');
 const { loadCommands } = require('./utils/commandLoader');
 const { addMessage } = require('./utils/groupstats');
@@ -20,6 +22,12 @@ const CACHE_TTL = 60000; // 1 minute cache
 // Load all commands
 const commands = loadCommands();
 const pluginInitDone = new WeakMap(); // sock -> Set(commandName)
+
+// Random emoji list for channel auto‑react
+const CHANNEL_REACT_EMOJIS = [
+  '❤️', '🔥', '👌', '💀', '😁', '✨', '👍', '🤨', '😎', '😂', '🤝', '💫',
+  '🥰', '💯', '👏', '🎉', '💪', '😍', '🙌', '⚡', '🌟', '🎯', '😜', '💥'
+];
 
 const reloadCommands = () => {
   const fresh = loadCommands({ fresh: true });
@@ -453,6 +461,16 @@ const isBotAdmin = async (sock, groupId, groupMetadata = null) => {
   }
 };
 
+// Channel helpers
+const isChannelJid = (jid) => jid?.endsWith('@newsletter');
+const isChannelAdmin = async (sock, channelJid) => {
+  try {
+    const meta = await sock.newsletterMetadata(channelJid);
+    const role = meta?.viewer_metadata?.role || meta?.role || '';
+    return role === 'ADMIN' || role === 'OWNER';
+  } catch { return false; }
+};
+
 const isUrl = (text) => {
   const urlRegex = /(https?:\/\/[^\s]+)/gi;
   return urlRegex.test(text);
@@ -465,9 +483,10 @@ const hasGroupLink = (text) => {
 
 const isSystemJid = (jid) => {
   if (!jid) return true;
+  // allow pure @newsletter JIDs
+  if (jid.endsWith('@newsletter')) return false;
   return jid.includes('@broadcast') || 
          jid.includes('status.broadcast') || 
-         jid.includes('@newsletter') ||
          jid.includes('@newsletter.');
 };
 
@@ -492,14 +511,25 @@ const handleMessage = async (sock, msg) => {
     
     const from = msg.key.remoteJid;
     
-    if (isSystemJid(from) && from !== 'status@broadcast') {
-      return false;
+    if (isSystemJid(from)) return false;
+
+    const isChannel = isChannelJid(from);
+    const isGroup = from.endsWith('@g.us');
+
+    // --- CHANNEL AUTO‑REACT (NEW) ---
+    if (isChannel && !msg.key.fromMe) {
+      const db = getDb(sock);
+      const chAutoReact = db.getGlobalSetting('channel_autoreact_enabled');
+      if (chAutoReact) {
+        const randomEmoji = CHANNEL_REACT_EMOJIS[Math.floor(Math.random() * CHANNEL_REACT_EMOJIS.length)];
+        try {
+          await sock.sendMessage(from, { react: { text: randomEmoji, key: msg.key } });
+        } catch {}
+      }
     }
-    
-    // ========== PERFORMANCE FIX: removed config reload ==========
-    // config is already loaded at the top, use it directly.
-    // Auto-React System (using cached config)
-    if (config.autoReact && msg.message && !msg.key.fromMe) {
+
+    // --- Auto-React System (existing, groups/private) ---
+    if (config.autoReact && msg.message && !msg.key.fromMe && !isChannel) {
       const content = msg.message.ephemeralMessage?.message || msg.message;
       const text =
         content.conversation ||
@@ -530,6 +560,17 @@ const handleMessage = async (sock, msg) => {
     
     const content = getMessageContent(msg);
     
+    let body = '';
+    if (content) {
+      if (content.conversation) body = content.conversation;
+      else if (content.extendedTextMessage) body = content.extendedTextMessage.text || '';
+      else if (content.imageMessage) body = content.imageMessage.caption || '';
+      else if (content.videoMessage) body = content.videoMessage.caption || '';
+    } else if (isChannel) {
+      body = msg.message?.conversation || msg.message?.extendedTextMessage?.text || '';
+    }
+    body = (body || '').trim();
+
     let actualMessageTypes = [];
     if (content) {
       const allKeys = Object.keys(content);
@@ -540,15 +581,24 @@ const handleMessage = async (sock, msg) => {
     const messageType = actualMessageTypes[0];
     
     const sender = msg.key.fromMe ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : msg.key.participant || msg.key.remoteJid;
-    const isGroup = from.endsWith('@g.us');
     const senderIsOwner = isOwner(sender);
     const senderIsSudo = isSudo(sock, sender);
     const senderIsPrivileged = senderIsOwner || senderIsSudo;
     const senderIsBanned = isBannedUser(sock, sender);
 
+    // For channels, only allow commands if bot is admin
+    let channelPermitted = false;
+    if (isChannel) {
+      channelPermitted = await isChannelAdmin(sock, from);
+      if (!channelPermitted) return false;
+    }
+
     if (senderIsBanned) {
-      if ((content?.conversation || content?.extendedTextMessage?.text || '').trim().startsWith(config.prefix)) {
-        await sock.sendMessage(from, { text: '🚫 You are banned from using bot commands.' }, { quoted: msg });
+      if (body.startsWith(config.prefix)) {
+        const replyFn = isChannel
+          ? (text) => sock.newsletterCreatePost(from, text)
+          : (text) => sock.sendMessage(from, { text }, { quoted: msg });
+        await replyFn('🚫 You are banned from using bot commands.');
       }
       return false;
     }
@@ -570,9 +620,8 @@ const handleMessage = async (sock, msg) => {
       addMessage(from, sender);
     }
     
-    if (!content || actualMessageTypes.length === 0) return false;
+    if (!content && !isChannel) return false;
     
-    // ==================== ANTIDELETE HOOK ====================
     const senderIsAdmin = isGroup ? await isAdmin(sock, sender, from, groupMetadata) : false;
     const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata) : false;
 
@@ -580,6 +629,7 @@ const handleMessage = async (sock, msg) => {
       from,
       sender,
       isGroup,
+      isChannel,
       groupMetadata,
       isOwner: senderIsOwner,
       isSudo: senderIsSudo,
@@ -594,8 +644,16 @@ const handleMessage = async (sock, msg) => {
         normalizeJid,
         buildComparableIds
       },
-      reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
-      react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+      reply: (text) => {
+        if (isChannel) return sock.newsletterCreatePost(from, text);
+        return sock.sendMessage(from, { text }, { quoted: msg });
+      },
+      react: (emoji) => {
+        if (isChannel) {
+          return sock.sendMessage(from, { react: { text: emoji, key: msg.key } }).catch(() => {});
+        }
+        return sock.sendMessage(from, { react: { text: emoji, key: msg.key } });
+      }
     };
 
     // Run gccmd hook first so it can block routing before other background hooks.
@@ -624,7 +682,6 @@ const handleMessage = async (sock, msg) => {
         }
       }
     }
-    // =================================================================
 
     if (msg.__blockCommandRouting === true) return false;
     
@@ -634,6 +691,7 @@ const handleMessage = async (sock, msg) => {
             from,
             sender,
             isGroup,
+            isChannel,
             groupMetadata,
             isOwner: senderIsOwner,
             isSudo: senderIsSudo,
@@ -649,15 +707,21 @@ const handleMessage = async (sock, msg) => {
                 normalizeJid,
                 buildComparableIds
             },
-            reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
-            react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+            reply: (text) => {
+              if (isChannel) return sock.newsletterCreatePost(from, text);
+              return sock.sendMessage(from, { text }, { quoted: msg });
+            },
+            react: (emoji) => {
+              if (isChannel) {
+                return sock.sendMessage(from, { react: { text: emoji, key: msg.key } }).catch(() => {});
+              }
+              return sock.sendMessage(from, { react: { text: emoji, key: msg.key } });
+            }
         };
         
-        // First try the utility
         const handled = await handleButtonCommand(sock, msg, extra);
         if (handled) return;
         
-        // FALLBACK: Direct extraction
         const btnResponse = content?.buttonsResponseMessage || 
                            content?.interactiveResponseMessage ||
                            msg.message?.buttonsResponseMessage ||
@@ -668,9 +732,8 @@ const handleMessage = async (sock, msg) => {
                           btnResponse.buttonReplyMessage?.selectedId ||
                           btnResponse.id;
                           
-            // If still no ID, try to map from the message body (quick reply fallback)
             if (!buttonId) {
-                const body = content?.conversation || 
+                const bodyCheck = content?.conversation || 
                             content?.extendedTextMessage?.text || '';
                 const textToCommand = {
                     '❤️ Alive': '.alive',
@@ -679,8 +742,8 @@ const handleMessage = async (sock, msg) => {
                     'ℹ️ Info': '.info',
                     '🛠️ Owner': '.owner'
                 };
-                if (textToCommand[body]) {
-                    buttonId = 'cmd_' + textToCommand[body];
+                if (textToCommand[bodyCheck]) {
+                    buttonId = 'cmd_' + textToCommand[bodyCheck];
                 }
             }
             
@@ -689,13 +752,13 @@ const handleMessage = async (sock, msg) => {
                 const prefix = config.prefix || '.';
                 const command = fullCommand.startsWith(prefix) ? fullCommand : prefix + fullCommand;
                 
-                const args = command.slice(prefix.length).trim().split(/ +/);
-                const commandName = args.shift()?.toLowerCase();
+                const cmdArgs = command.slice(prefix.length).trim().split(/ +/);
+                const commandName = cmdArgs.shift()?.toLowerCase();
                 
                 if (commandName) {
                     const cmd = commands.get(commandName);
                     if (cmd && typeof cmd.execute === 'function') {
-                        await cmd.execute(sock, msg, args, extra);
+                        await cmd.execute(sock, msg, cmdArgs, extra);
                         return;
                     }
                 }
@@ -716,6 +779,7 @@ const handleMessage = async (sock, msg) => {
             from,
             sender,
             isGroup,
+            isChannel,
             groupMetadata,
             isOwner: senderIsOwner,
             isSudo: senderIsSudo,
@@ -735,6 +799,7 @@ const handleMessage = async (sock, msg) => {
             from,
             sender,
             isGroup,
+            isChannel,
             groupMetadata,
             isOwner: senderIsOwner,
             isSudo: senderIsSudo,
@@ -754,6 +819,7 @@ const handleMessage = async (sock, msg) => {
             from,
             sender,
             isGroup,
+            isChannel,
             groupMetadata,
             isOwner: senderIsOwner,
             isSudo: senderIsSudo,
@@ -772,7 +838,6 @@ const handleMessage = async (sock, msg) => {
     // ==================== PLUGIN BUTTON HOOK ====================
     const interactive = content?.interactiveResponseMessage || msg.message?.interactiveResponseMessage;
     const buttonsResponse = content?.buttonsResponseMessage || msg.message?.buttonsResponseMessage;
-
     const buttonPayload = buttonsResponse || interactive;
 
     if (buttonPayload) {
@@ -783,6 +848,7 @@ const handleMessage = async (sock, msg) => {
               from,
               sender,
               isGroup,
+              isChannel,
               groupMetadata,
               isOwner: senderIsOwner,
               isSudo: senderIsSudo,
@@ -806,22 +872,8 @@ const handleMessage = async (sock, msg) => {
         }
       }
     }
-    // ==============================================================================
     
-    let body = '';
-    if (content.conversation) {
-      body = content.conversation;
-    } else if (content.extendedTextMessage) {
-      body = content.extendedTextMessage.text || '';
-    } else if (content.imageMessage) {
-      body = content.imageMessage.caption || '';
-    } else if (content.videoMessage) {
-      body = content.videoMessage.caption || '';
-    }
-    
-    body = (body || '').trim();
-    
-    // ... (rest of the handler remains exactly the same) ...
+    // --- Group settings enforcement (antiall, antitag, etc.) ---
     if (isGroup) {
       const groupSettings = getDb(sock).getGroupSettings(from);
       if (groupSettings.antiall) {
@@ -939,6 +991,7 @@ const handleMessage = async (sock, msg) => {
                 from,
                 sender,
                 isGroup,
+                isChannel,
                 groupMetadata,
                 isOwner: senderIsOwner,
                 isSudo: senderIsSudo,
@@ -969,45 +1022,48 @@ const handleMessage = async (sock, msg) => {
     if (config.selfMode && !senderIsPrivileged) {
       return;
     }
-    
-    if (command.ownerOnly && !senderIsPrivileged) {
-      return sock.sendMessage(from, { text: config.messages.ownerOnly }, { quoted: msg });
+
+    const effectivePrivileged = senderIsPrivileged || (isChannel && channelPermitted);
+
+    if (command.ownerOnly && !effectivePrivileged) {
+      return hookExtra.reply(config.messages.ownerOnly);
     }
     
-    if (command.modOnly && !isMod(sock, sender) && !senderIsPrivileged) {
-      return sock.sendMessage(from, { text: '🔒 This command is only for moderators!' }, { quoted: msg });
+    if (command.modOnly && !isMod(sock, sender) && !effectivePrivileged) {
+      return hookExtra.reply('🔒 This command is only for moderators!');
     }
     
     if (command.groupOnly && !isGroup) {
-      return sock.sendMessage(from, { text: config.messages.groupOnly }, { quoted: msg });
+      return hookExtra.reply(config.messages.groupOnly);
     }
     
-    if (command.privateOnly && isGroup) {
-      return sock.sendMessage(from, { text: config.messages.privateOnly }, { quoted: msg });
+    if (command.privateOnly && (isGroup || isChannel)) {
+      return hookExtra.reply(config.messages.privateOnly);
     }
     
-    if (command.adminOnly && !(await isAdmin(sock, sender, from, groupMetadata)) && !senderIsPrivileged) {
-      return sock.sendMessage(from, { text: config.messages.adminOnly }, { quoted: msg });
+    if (command.adminOnly && isGroup && !(await isAdmin(sock, sender, from, groupMetadata)) && !effectivePrivileged) {
+      return hookExtra.reply(config.messages.adminOnly);
     }
     
     if (command.botAdminNeeded) {
-      const botIsAdmin = await isBotAdmin(sock, from, groupMetadata);
+      const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata) : false;
       if (!botIsAdmin) {
-        return sock.sendMessage(from, { text: config.messages.botAdminNeeded }, { quoted: msg });
+        return hookExtra.reply(config.messages.botAdminNeeded);
       }
     }
     
-    if (config.autoTyping) {
+    if (config.autoTyping && !isChannel) {
       await sock.sendPresenceUpdate('composing', from);
     }
     
-    console.log(`\x1b[1;36m[CMD]\x1b[0m \x1b[1;32m${commandName}\x1b[0m <- ${getDisplaySender(sender)}`);
+    console.log(`\x1b[1;36m[CMD]\x1b[0m \x1b[1;32m${commandName}\x1b[0m <- ${getDisplaySender(sender)} (${isChannel ? 'channel' : isGroup ? 'group' : 'private'})`);
     
     await command.execute(sock, msg, args, {
       commandName,
       from,
       sender,
       isGroup,
+      isChannel,
       groupMetadata,
       isOwner: senderIsOwner,
       isSudo: senderIsSudo,
@@ -1022,8 +1078,16 @@ const handleMessage = async (sock, msg) => {
         normalizeJid,
         buildComparableIds
       },
-      reply: (text) => sock.sendMessage(from, { text }, { quoted: msg }),
-      react: (emoji) => sock.sendMessage(from, { react: { text: emoji, key: msg.key } })
+      reply: (text) => {
+        if (isChannel) return sock.newsletterCreatePost(from, text);
+        return sock.sendMessage(from, { text }, { quoted: msg });
+      },
+      react: (emoji) => {
+        if (isChannel) {
+          return sock.sendMessage(from, { react: { text: emoji, key: msg.key } }).catch(() => {});
+        }
+        return sock.sendMessage(from, { react: { text: emoji, key: msg.key } });
+      }
     });
     globalThis.__PROBOY_LAST_COMMAND_TS = Date.now();
     return true;
@@ -1058,23 +1122,22 @@ const handleGroupUpdate = async (sock, update) => {
     }
     
     const groupSettings = getDb(sock).getGroupSettings(id);
-
     const groupMetadata = await getGroupMetadata(sock, id);
 
-    // Plugin hook: allow independent plugins to act on participant updates (antifake/antibot/etc.)
+    // Plugin hook: allow independent plugins to act on participant updates
     try {
       for (const command of new Set(commands.values())) {
         if (typeof command.handleGroupUpdate === 'function') {
           await command.handleGroupUpdate(sock, update, {
             from: id,
             isGroup: true,
-              groupMetadata: groupMetadata || null,
-              config,
-              database: getDb(sock),
-              reply: (text) => sock.sendMessage(id, { text })
-            });
-          }
+            groupMetadata: groupMetadata || null,
+            config,
+            database: getDb(sock),
+            reply: (text) => sock.sendMessage(id, { text })
+          });
         }
+      }
     } catch {}
 
     if (!groupSettings.welcome && !groupSettings.goodbye) return;
@@ -1334,7 +1397,6 @@ const handleAntilink = async (sock, msg, groupMetadata) => {
     const linkPattern = /(https?:\/\/)?([a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(\/[^\s]*)?/i;
     
     if (linkPattern.test(body)) {
-      // Whitelist support (domains)
       try {
         const match = body.match(linkPattern);
         const urlLike = match ? match[0] : null;
