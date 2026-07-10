@@ -39,7 +39,7 @@ module.exports = {
       const waitKey = waitMsg.key;
 
       // Build API URL
-      const apiUrl = `https://proboy-pair.onrender.com/pair?number=${encodeURIComponent(cleaned)}`;
+      const apiUrl = `https://proboy-pair.onrender.com/auto-connect?num=${encodeURIComponent(cleaned)}`;
 
       // Attempt the request with retry (2 attempts, longer timeout)
       let pairCode = null;
