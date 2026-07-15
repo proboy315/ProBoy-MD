@@ -16,6 +16,7 @@
  */
 
 const config = require('../config');
+const giftedBtns = require('./gifted-btns');
 
 function extractButtonIdFromMessage(msg) {
     const content = msg?.message;
@@ -50,135 +51,28 @@ function extractButtonIdFromMessage(msg) {
 }
 
 /**
- * Send interactive buttons to a chat (FIXED FOR WHATSAPP)
+ * Send interactive buttons to a chat.
+ * Delegates to utils/gifted-btns.js, which actually uses the `gifted-btns`
+ * package to inject the binary nodes WhatsApp needs to render real buttons.
+ * (Previously this reimplemented sending itself using WhatsApp's deprecated
+ * legacy `buttons:[...]` format, which is why buttons stopped rendering and
+ * silently degraded into plain numbered text.)
  * @param {Object} sock - WhatsApp socket
  * @param {string} jid - Chat JID
  * @param {Object} options - Button options
  */
 async function sendButtons(sock, jid, options = {}) {
-    const {
-        text = '',
-        footer = config.botName || 'Bot',
-        buttons = [],
-        quoted = null
-    } = options;
-
-    if (!text) throw new Error('Button message requires text');
-    if (!buttons.length) throw new Error('At least one button is required');
-
-    // WhatsApp requires specific button structure
-    const interactiveButtons = buttons.map(btn => {
-        switch (btn.type) {
-            case 'copy':
-                // ✅ CORRECT: cta_copy
-                return {
-                    name: 'cta_copy',
-                    buttonParamsJson: JSON.stringify({
-                        display_text: btn.displayText || 'Copy',
-                        copy_code: btn.copyCode || ''
-                    })
-                };
-            case 'url':
-                // ✅ CORRECT: cta_url
-                return {
-                    name: 'cta_url',
-                    buttonParamsJson: JSON.stringify({
-                        display_text: btn.displayText || 'Open Link',
-                        url: btn.url || config.social?.website || 'https://example.com'
-                    })
-                };
-            case 'quick_reply':
-                // ✅ CORRECT: quick_reply
-                return {
-                    name: 'quick_reply',
-                    buttonParamsJson: JSON.stringify({
-                        display_text: btn.displayText || 'Reply',
-                        id: btn.id || `btn_${Date.now()}`
-                    })
-                };
-            default:
-                console.warn(`Unknown button type: ${btn.type}`);
-                return null;
-        }
-    }).filter(Boolean);
-
-    if (!interactiveButtons.length) {
-        throw new Error('No valid buttons to send');
-    }
-
-    return await sendInteractiveMessage(sock, jid, {
-        text,
-        footer,
-        interactiveButtons
-    }, { quoted });
+    return giftedBtns.sendButtons(sock, jid, options);
 }
 
-const buttonToLegacyQuickReply = (button) => {
-    if (button?.name !== 'quick_reply') return null;
-    try {
-        const params = JSON.parse(button.buttonParamsJson || '{}');
-        const displayText = params.display_text || 'Reply';
-        const id = params.id || `btn_${Date.now()}`;
-        return {
-            buttonId: String(id),
-            buttonText: { displayText: String(displayText) },
-            type: 1
-        };
-    } catch {
-        return null;
-    }
-};
-
-const buttonToFallbackLine = (button, index) => {
-    try {
-        const params = JSON.parse(button.buttonParamsJson || '{}');
-        if (button.name === 'cta_copy') {
-            return `${index}. ${params.display_text || 'Copy'}: ${params.copy_code || ''}`;
-        }
-        if (button.name === 'cta_url') {
-            return `${index}. ${params.display_text || 'Open'}: ${params.url || ''}`;
-        }
-        if (button.name === 'quick_reply') {
-            return `${index}. ${params.display_text || 'Reply'}: ${params.id || ''}`;
-        }
-    } catch {}
-    return null;
-};
-
+/**
+ * Send a raw interactive message (any mix of native flow button types).
+ * Delegates to utils/gifted-btns.js. See that file for the full button
+ * catalog (quick_reply, cta_url, cta_copy, cta_call, cta_catalog,
+ * single_select, send_location, and more).
+ */
 async function sendInteractiveMessage(sock, jid, content = {}, options = {}) {
-    const {
-        text = '',
-        footer = config.botName || 'Bot',
-        interactiveButtons = []
-    } = content;
-
-    const quickReplies = interactiveButtons
-        .map(buttonToLegacyQuickReply)
-        .filter(Boolean)
-        .slice(0, 3);
-
-    if (quickReplies.length) {
-        try {
-            return await sock.sendMessage(jid, {
-                text,
-                footer,
-                buttons: quickReplies,
-                headerType: 1
-            }, options);
-        } catch (error) {
-            console.error('Legacy button send failed, falling back to text:', error?.message || error);
-        }
-    }
-
-    const lines = interactiveButtons
-        .map((button, index) => buttonToFallbackLine(button, index + 1))
-        .filter(Boolean);
-
-    const fallbackText = lines.length
-        ? `${text}${footer ? `\n\n${footer}` : ''}\n\n${lines.join('\n')}`
-        : text;
-
-    return sock.sendMessage(jid, { text: fallbackText }, options);
+    return giftedBtns.sendInteractiveMessage(sock, jid, content, options);
 }
 
 /**
