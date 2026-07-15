@@ -5,7 +5,7 @@
  */
 
 const axios = require('axios');
-const { sendInteractiveMessage } = require('../../utils/button');
+const { sendInteractiveMessage } = require('../../utils/gifted-btns');
 
 module.exports = {
   name: 'pair',
