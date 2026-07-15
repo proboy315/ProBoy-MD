@@ -1,6 +1,6 @@
 // commands/utility/readmore.js
 
-const { sendInteractiveMessage } = require('../../utils/button');
+const { sendInteractiveMessage } = require('../../utils/gifted-btns');
 const config = require('../../config');
 
 module.exports = {
