@@ -1,5 +1,3 @@
-// commands/utility/readmore.js
-
 const { sendInteractiveMessage } = require('../../utils/gifted-btns');
 const config = require('../../config');
 
@@ -7,7 +5,7 @@ module.exports = {
   name: 'readmore',
   aliases: ['rdmore', 'rmore'],
   category: 'utility',
-  description: 'Multi-step readmore with copy button',
+  description: 'Multi‑step readmore with copy button (single message)',
   usage: '.readmore 1 + 2 + 3 + 4',
 
   ownerOnly: false,
@@ -26,34 +24,40 @@ module.exports = {
       }
 
       const input = args.join(' ').trim();
-
       if (!input.includes('+')) {
         return reply(`❌ Use + sign\n\nExample:\n${this.usage}`);
       }
 
       await react('⏳');
 
+      // Split and clean parts
       const parts = input
         .split('+')
         .map(x => x.trim())
         .filter(Boolean);
 
-      const invisible = String.fromCharCode(8206).repeat(4001);
+      // Full visible text (all parts joined) – used for copy button
+      const fullVisibleText = parts.join('\n\n');
 
-      let collected = '';
+      // Build the message with readmore effect
+      let msgText;
+      const invisible = '\u200e'.repeat(4001); // left‑to‑right mark filler
 
-      for (let i = 0; i < parts.length; i++) {
+      if (parts.length === 1) {
+        // Only one part – no readmore needed
+        msgText = parts[0];
+      } else {
+        // First part visible, rest hidden until "Read more"
+        const firstPart = parts[0];
+        const restParts = parts.slice(1).join('\n\n');
+        msgText = firstPart + '\n' + invisible + '\n' + restParts;
+      }
 
-        collected += (collected ? '\n\n' : '') + parts[i];
-
-        let msgText = collected;
-
-        // If more parts remaining add readmore
-        if (i < parts.length - 1) {
-          msgText += '\n' + invisible;
-        }
-
-        await sendInteractiveMessage(sock, from, {
+      // Send SINGLE interactive message
+      await sendInteractiveMessage(
+        sock,
+        from,
+        {
           text: msgText,
           footer: config.botName || 'Bot',
           interactiveButtons: [
@@ -61,24 +65,19 @@ module.exports = {
               name: 'cta_copy',
               buttonParamsJson: JSON.stringify({
                 display_text: '📋 Copy Text',
-                copy_code: collected
-              })
-            }
-          ]
-        }, { quoted: msg });
-
-        // delay for progressive feel
-        if (i < parts.length - 1) {
-          await new Promise(r => setTimeout(r, 1200));
-        }
-      }
+                copy_code: fullVisibleText,   // clean text without invisible chars
+              }),
+            },
+          ],
+        },
+        { quoted: msg }
+      );
 
       await react('✅');
-
     } catch (error) {
       console.error('Readmore Error:', error);
       await reply(`❌ Failed: ${error.message}`);
       await react('❌');
     }
-  }
+  },
 };
