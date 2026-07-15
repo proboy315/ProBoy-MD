@@ -1,6 +1,6 @@
 # ProBoy-MD Development Prompt (Production-Aligned)
 
-Use this as the primary prompt/spec for anyone building or modifying features in this repository.
+Use this as the primary prompt/spec for anyone (human or AI) building or modifying features in this repository.
 This document is aligned with current project behavior in `index.js`, `handler.js`, `config.js`, `database.js`, `commands/*`, and `utils/*`.
 
 ---
@@ -13,6 +13,7 @@ This document is aligned with current project behavior in `index.js`, `handler.j
 - Command loader: `utils/commandLoader.js`
 - Storage: `database.js` + JSON files under `database/`
 - Command modules: `commands/<category>/<command>.js`
+- Button system: `utils/gifted-btns.js` (core) + `utils/button.js` (compat layer + click routing)
 - Primary config surface: `config.js`
 - Config submodules: `settings/api-keys.js`, `settings/apis.js`, `settings/messages.js`, `settings/social.js`, `settings/templates.js`
 
@@ -127,7 +128,8 @@ Rules:
 
 ### Files controlling this
 - `commands/general/menu.js`
-- `utils/button.js`
+- `utils/gifted-btns.js` (actual send/render — talks to the `gifted-btns` npm package)
+- `utils/button.js` (thin compat wrapper + inbound click routing)
 - `handler.js`
 
 Delivery notes:
@@ -137,23 +139,143 @@ Delivery notes:
 
 ---
 
-## 5) Button Utility Standard
+## 5) Button System — `gifted-btns` (Full Reference)
 
-Use:
+**This section is the authoritative source for how to send buttons in this repo.**
+Any AI/agent generating code that sends WhatsApp buttons MUST follow this section exactly.
+Deviating from these shapes (wrong `name`, wrong `buttonParamsJson` keys, un-stringified JSON, etc.) is the #1 cause of buttons silently failing or falling back to plain numbered text.
+
+### 5.1 Two files, two jobs
+
+| File | Job |
+|---|---|
+| `utils/gifted-btns.js` | **Sending.** Real wrapper around the `gifted-btns` npm package. Injects the binary nodes (`biz`, `interactive`, `native_flow`, `bot`) WhatsApp needs to actually render buttons. Has a safe plain-text fallback if the package is ever missing/broken — it will never throw and crash a command. |
+| `utils/button.js` | **Receiving + convenience.** Extracts the clicked button `id` from an incoming message (`extractButtonIdFromMessage`), routes `cmd_*` button clicks to the matching command (`handleButtonResponse`), and re-exports `sendButtons` / `sendInteractiveMessage` (which internally just call `utils/gifted-btns.js`). Most commands only need to import from `utils/button.js`; import `utils/gifted-btns.js` directly only when you need the full catalog builders (`buttons.singleSelect`, `buttons.reviewAndPay`, etc.) or `normalizeLegacyButton`. |
+
+```js
+// Simple / common case — either import works, both hit the same sender under the hood
+const { sendButtons, sendInteractiveMessage } = require('../../utils/button');
+// or, equivalently, for direct access + full builder helpers:
+const { sendButtons, sendInteractiveMessage, buttons } = require('../../utils/gifted-btns');
+```
+
+### 5.2 Quick start — one CTA copy button (most common pattern, e.g. `.pair`)
+
+```js
+const { sendInteractiveMessage } = require('../../utils/gifted-btns');
+
+await sendInteractiveMessage(sock, from, {
+  text: `✅ Your code is:\n\n\`${code}\``,
+  footer: 'ProBoy-MD',
+  interactiveButtons: [
+    {
+      name: 'cta_copy',
+      buttonParamsJson: JSON.stringify({
+        display_text: '📋 Copy Code',
+        copy_code: code
+      })
+    }
+  ]
+}, { quoted: msg });
+```
+
+### 5.3 Quick start — a few quick-reply buttons (legacy simple shape via `sendButtons`)
 
 ```js
 const { sendButtons } = require('../../utils/button');
+
+await sendButtons(sock, from, {
+  text: 'Choose an option:',
+  footer: 'ProBoy-MD',
+  buttons: [
+    { type: 'quick_reply', displayText: 'Alive', id: 'cmd_.alive' },
+    { type: 'url', displayText: 'Website', url: 'https://proboy.vercel.app' },
+    { type: 'copy', displayText: 'Copy Code', copyCode: '123456' }
+  ]
+});
+```
+`sendButtons` accepts the simple `{ type, displayText, ... }` shape and normalizes it internally — use this for the common cases. For anything beyond `quick_reply` / `url` / `copy` / `call` / `catalog` / `select` / `location`, or to mix several kinds in one message, use `sendInteractiveMessage` with the raw `interactiveButtons` array (see catalog below).
+
+### 5.4 Full Button Catalog (`native_flow` names)
+
+Every entry needs `{ name, buttonParamsJson }` where `buttonParamsJson` is **always `JSON.stringify(...)`** — never a raw object.
+
+| `name` | Purpose | Required `buttonParamsJson` keys | Builder helper (`utils/gifted-btns.js` → `buttons.*`) |
+|---|---|---|---|
+| `quick_reply` | Sends its `id` back as a message | `{ display_text, id }` | `buttons.quickReply(displayText, id)` |
+| `cta_url` | Opens a URL | `{ display_text, url, merchant_url? }` | `buttons.ctaUrl(displayText, url, merchantUrl?)` |
+| `cta_copy` | Copies text to clipboard | `{ display_text, copy_code }` | `buttons.ctaCopy(displayText, copyCode)` |
+| `cta_call` | Tap-to-dial | `{ display_text, phone_number }` | `buttons.ctaCall(displayText, phoneNumber)` |
+| `cta_catalog` | Opens business catalog | `{ display_text? }` | `buttons.ctaCatalog(displayText?)` |
+| `single_select` | In-message picker list | `{ title, sections:[{ title?, rows:[{ id, title, description?, header? }] }] }` | `buttons.singleSelect(title, sections)` |
+| `send_location` | Requests user location | `{ display_text? }` | `buttons.sendLocation(displayText?)` |
+| `review_and_pay` | Order/payment summary (special) | Server-validated payment payload | `buttons.reviewAndPay(payload)` |
+| `payment_info` | Payment info flow (special) | Payment payload | `buttons.paymentInfo(payload)` |
+| `mpm` | Multi-product message (catalog) | Vendor structure | `buttons.mpm(payload)` |
+| `wa_payment_transaction_details` | Show transaction | Transaction reference keys | `buttons.waPaymentTransactionDetails(payload)` |
+| `automated_greeting_message_view_catalog` | Greeting → catalog | Minimal/internal | `buttons.automatedGreetingMessageViewCatalog(payload)` |
+
+**Core stable ones for normal bot commands:** `quick_reply`, `cta_url`, `cta_copy`, `cta_call`, `single_select`. The special payment/catalog ones are official-business-client-only — don't rely on them rendering for a personal number.
+
+### 5.5 Mixing several button kinds in one message
+
+```js
+const { sendInteractiveMessage, buttons } = require('../../utils/gifted-btns');
+
+await sendInteractiveMessage(sock, from, {
+  text: 'Pick or explore',
+  footer: 'ProBoy-MD',
+  interactiveButtons: [
+    buttons.quickReply('Hi', 'hi'),
+    buttons.ctaUrl('Docs', 'https://example.com'),
+    buttons.singleSelect('Menu', [
+      { title: 'Options', rows: [
+        { id: 'a', title: 'Alpha', description: 'First item' },
+        { id: 'b', title: 'Beta', description: 'Second item' }
+      ]}
+    ])
+  ]
+}, { quoted: msg });
 ```
 
-Supported button types:
-- `quick_reply` (id based)
-- `url` (cta link)
-- `copy` (copy code)
+### 5.6 Image header + AI mode (private-chat conversational rendering)
 
-Best practices:
+```js
+await sendInteractiveMessage(sock, from, {
+  title: 'Header Title',
+  text: 'Body text',
+  footer: 'ProBoy-MD',
+  image: { url: 'https://example.com/image.jpg' }, // or { buffer } or a local path
+  aimode: true, // only affects private (1:1) chats
+  interactiveButtons: [ buttons.ctaUrl('Open Site', 'https://example.com') ]
+}, { quoted: msg });
+```
+
+### 5.7 Error handling — already built in, don't reimplement it
+
+`sendButtons` / `sendInteractiveMessage` in `utils/gifted-btns.js` already:
+- wrap the real `gifted-btns` package call in try/catch,
+- fall back to a readable numbered plain-text message if the package errors or isn't installed,
+- never throw for a missing package (they log `[GIFTED-BTNS] ...` and degrade gracefully).
+
+**Do not** wrap these calls in your own duplicate try/catch that swallows the error silently — let your command's own top-level try/catch (per the command template) report failures via `extra.reply`.
+
+### 5.8 Common mistakes (avoid these — they are the reasons buttons silently break)
+
+- ❌ Passing a raw object instead of a JSON string for `buttonParamsJson` (`buttonParamsJson: {...}` instead of `buttonParamsJson: JSON.stringify({...})`).
+- ❌ Re-implementing WhatsApp's old legacy `buttons:[...]` / `headerType` format directly with `sock.sendMessage(...)`. That format is deprecated and no longer renders — **always** go through `utils/gifted-btns.js`.
+- ❌ Sending more than 3 `quick_reply` buttons in a single message and expecting reliable rendering — chunk into multiple messages instead (see `sendCommandMenu` in `utils/button.js` for the pattern).
+- ❌ Forgetting `footer` — pass one explicitly or rely on the `config.botName` default.
+- ❌ Expecting `review_and_pay` / `payment_info` / `mpm` / catalog buttons to render on a non-business personal WhatsApp — WhatsApp silently ignores unsupported special flows on those accounts.
+- ❌ Adding your own `bot` node manually — `gifted-btns` auto-injects it for private chats when needed.
+- ❌ Importing button IDs with spaces — keep IDs short, deterministic, `cmd_`-prefixed for command-driven buttons (see Section 6).
+
+### 5.9 Button IDs & best practices (repo-specific)
+
 - Keep button IDs short and deterministic.
 - For category/state flows, prefer no spaces in IDs.
-- If flow is command-driven, start IDs with `cmd_`.
+- If a button should run a command when clicked, its `id` **must** start with `cmd_` (e.g. `cmd_.alive`) — `utils/button.js`'s `handleButtonResponse` only routes IDs with that prefix (plus the reserved `cmd_menu_home` / `cmd_menu_cat_<category>`).
+- Never break an existing button ID that's already deployed/cached in users' chats.
 
 ---
 
@@ -210,6 +332,7 @@ while IFS= read -r f; do node -c "$f" || break; done < <(rg --files -g '*.js' -g
 ```bash
 node -e "require('./handler'); console.log('handler ok')"
 node -e "const {loadCommands}=require('./utils/commandLoader'); console.log(loadCommands().size)"
+node -e "require('./utils/gifted-btns'); console.log('gifted-btns wrapper ok')"
 ```
 
 3. Manual WhatsApp smoke:
@@ -217,6 +340,7 @@ node -e "const {loadCommands}=require('./utils/commandLoader'); console.log(load
 - click `DEV`
 - click `BACK`
 - verify `View Channel` button opens
+- send a command that uses `cta_copy` (e.g. `.pair`) and confirm a **real tappable button** appears, not numbered plain text
 
 4. Permission smoke:
 - one `ownerOnly` command as owner
@@ -234,21 +358,28 @@ node -e "const {loadCommands}=require('./utils/commandLoader'); console.log(load
 2. Ensure `newsletterJid` valid.
 3. Set channel URL (`config.social.channel` recommended).
 4. Confirm `menuButtonsEnabled` desired default in DB.
-5. Restart bot cleanly.
-6. Run smoke tests in private and group chat.
-7. Monitor first 10 minutes logs for button/command errors.
-8. If using remote sessions, watch for `401` / `logged_out` and remove stale sessions.
+5. Run `npm install` so the `gifted-btns` package is present (buttons silently degrade to text without it — check logs for `[GIFTED-BTNS] Package "gifted-btns" is not installed/loadable`).
+6. Restart bot cleanly.
+7. Run smoke tests in private and group chat.
+8. Monitor first 10 minutes logs for button/command errors.
+9. If using remote sessions, watch for `401` / `logged_out` and remove stale sessions.
 
 ---
 
 ## 10) Debugging Playbook
 
 If buttons appear but do nothing:
-1. Check `utils/button.js` ID extraction path.
+1. Check `utils/button.js` ID extraction path (`extractButtonIdFromMessage`).
 2. Confirm `handler.js` passes `commands` in `extra` to button handler.
 3. Confirm clicked ID starts with expected prefixes (`cmd_`, `cmd_menu_cat_`).
 4. Check command exists in `loadCommands()` map.
 5. Check console for `Button command error` lines.
+
+If buttons render as plain numbered text instead of real tappable buttons:
+1. Check console for `[GIFTED-BTNS] Package "gifted-btns" is not installed/loadable` — run `npm install`.
+2. Check console for `[GIFTED-BTNS] sendInteractiveMessage failed` / `sendButtons failed` — read the underlying error message logged right after.
+3. Confirm no code path is calling `sock.sendMessage(jid, { buttons: [...], headerType: 1 })` directly anywhere (that's the deprecated legacy format — grep for `headerType` across `commands/` and `utils/`).
+4. Confirm `buttonParamsJson` values are `JSON.stringify(...)` strings, not raw objects.
 
 If menu output mixed/simple unexpectedly:
 1. Verify `menuButtonsEnabled` current value.
@@ -305,12 +436,19 @@ If remote sessions disconnect or stall:
   - Missing `javascript-obfuscator` must not break startup.
   - Failure should happen only when the command is actually used.
 
+- `commands/utility/pair.js`
+  - Generates a WhatsApp pairing code via the external pairing API.
+  - Result is delivered via a real `cta_copy` button (`utils/gifted-btns.js`) — never plain text.
+
+- `commands/utility/readmore.js`
+  - Sends progressive "read more" chunks, each with a `cta_copy` button to copy the full text so far.
+
 ---
 
 ## 13) Logging Rules
 
 - Console logs should stay concise, readable, and production-friendly.
-- Current style uses labels like `[BOOT]`, `[INFO]`, `[REMOTE]`, `[CONNECT]`, `[READY]`, `[CMD]`, `[WARN]`, `[CLEAN]`.
+- Current style uses labels like `[BOOT]`, `[INFO]`, `[REMOTE]`, `[CONNECT]`, `[READY]`, `[CMD]`, `[WARN]`, `[CLEAN]`, `[GIFTED-BTNS]`.
 - Prefer resolved phone numbers in command logs instead of raw `@lid`.
 - Throttle repeated network/fetch warnings.
 
@@ -322,6 +460,8 @@ When AI generates new code for this repo, it must:
 - Follow current command contract and folder structure.
 - Keep behavior deterministic and backward-compatible.
 - Avoid breaking button IDs already in use.
+- Send any button using `utils/button.js` or `utils/gifted-btns.js` exactly as documented in **Section 5** — never hand-roll `sock.sendMessage(..., { buttons: [...], headerType: 1 })` or any other ad-hoc button format.
+- Always `JSON.stringify()` a button's `buttonParamsJson`.
 - Use `try/catch` in command execute methods.
 - Return user-friendly errors via `extra.reply`.
 - Avoid silent failures in interactive flows.
@@ -348,6 +488,41 @@ module.exports = {
       await extra.react('✅');
     } catch (error) {
       await extra.reply(`❌ ${error.message}`);
+    }
+  }
+};
+```
+
+## 16) Minimal Button Command Template
+
+```js
+const config = require('../../config');
+const { sendInteractiveMessage, buttons } = require('../../utils/gifted-btns');
+
+module.exports = {
+  name: 'examplebtn',
+  category: 'general',
+  description: 'Example command that replies with a button',
+  usage: `${config.prefix}examplebtn <code>`,
+
+  async execute(sock, msg, args, extra) {
+    const { reply, react, from } = extra;
+    try {
+      if (!args.length) return reply(`Usage: ${this.usage}`);
+      await react('⏳');
+
+      await sendInteractiveMessage(sock, from, {
+        text: `Here is your code:\n\n\`${args[0]}\``,
+        footer: config.botName,
+        interactiveButtons: [
+          buttons.ctaCopy('📋 Copy Code', args[0])
+        ]
+      }, { quoted: msg });
+
+      await react('✅');
+    } catch (error) {
+      await reply(`❌ ${error.message}`);
+      await react('❌');
     }
   }
 };
