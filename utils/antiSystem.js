@@ -1,28 +1,35 @@
 /**
  * ProBoy-MD :: Anti-System (AntiLink + AntiCall)
  * ============================================================================
- * BUGS THIS FILE FIXES (found while auditing the old handler.js):
+ * v3 CHANGELOG (this revision)
+ * ============================================================================
+ * ANTICALL:
+ *  - Rejection message is now user-configurable per session
+ *    (`.anticall message <text>`) instead of a hardcoded string.
+ *  - Confirmed/hardened per-session scoping: anticall reads/writes through
+ *    `getDb(sock)`, which resolves to `sock.sessionDb` — i.e. THIS
+ *    connected number's own database file, not a shared one. Turning
+ *    anticall on for your number never affects any other connected number;
+ *    each one only enforces it if THEY turn it on for themselves. (This
+ *    was already true architecturally, since every session gets its own
+ *    `sock.sessionDb` per README's "Session-Scoped Settings" — if you're
+ *    seeing cross-account behavior, check that `sock.sessionDb` is being
+ *    assigned for every session, including ones added via `.connect`.)
  *
- * 1) ANTILINK was defined but was being invoked from `proboy.js` via a
- *    fire-and-forget `.then()` AFTER `handleMessage` had already fully
- *    processed the message (command routing, everything). That race let
- *    a link sit in the group and be visible/processed before deletion,
- *    and any error was silently swallowed by `.catch(()=>{})`.
- *    FIX: antilink is now invoked synchronously, first, inside
- *    handleMessage — before command routing — exactly like every other
- *    anti-feature (antitag, antigroupmention, antiall).
- *
- * 2) ANTICALL read `config.anticall || config.defaultGroupSettings.anticall`
- *    — both are static values baked into config.js at deploy time. There
- *    was no command/toggle that could ever change this at runtime, so the
- *    feature was permanently whatever config.js said (effectively always
- *    off, since neither field defaults to true).
- *    FIX: anticall is now a DB-backed GLOBAL setting (calls aren't scoped
- *    to a single group — they ring the bot's own number — so a single
- *    global on/off makes more sense than a per-group setting). Falls back
- *    to `config.defaultGroupSettings.anticall` only if nothing has been
- *    set in the DB yet. Toggle it with `.anticall on` / `.anticall off`
- *    (commands/owner/anticall.js).
+ * ANTILINK: now a full configurable system, not just an on/off flag.
+ *  - EXCLUDE list (`groupSettings.antilinkWhitelist`) — domains that are
+ *    always allowed through, even while antilink is on.
+ *  - INCLUDE list (`groupSettings.antilinkInclude`, NEW) — specific
+ *    substrings/patterns (e.g. a known phishing link fragment) that are
+ *    ALWAYS enforced, regardless of whether general antilink is on or off.
+ *    This is for "always nuke this specific bad link" rules independent of
+ *    your general link policy. Example: adding `proboy-md.gt.tc` to
+ *    include means any message containing that text gets deleted/kicked
+ *    even if `.antilink off`.
+ *  - Configurable per-group warning limit (`groupSettings.antilinkWarnLimit`,
+ *    NEW, falls back to `config.maxWarnings`) and a way to reset a user's
+ *    warning count (`.antilink resetwarn @user`).
+ *  - All managed through the new `commands/general/antilink.js` command.
  * ============================================================================
  */
 
@@ -35,9 +42,69 @@ const logger = require('./logger');
 
 const LINK_PATTERN = /(https?:\/\/)?([a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]*\.)+[a-zA-Z]{2,}(\/[^\s]*)?/i;
 
+function getAntilinkWarnLimit(groupSettings) {
+  const custom = Number(groupSettings?.antilinkWarnLimit);
+  if (Number.isFinite(custom) && custom > 0) return custom;
+  return config.maxWarnings || 3;
+}
+
+function matchesInclude(body, includeList) {
+  if (!Array.isArray(includeList) || !includeList.length) return null;
+  const lower = body.toLowerCase();
+  return includeList.find(pattern => pattern && lower.includes(String(pattern).toLowerCase())) || null;
+}
+
+function isWhitelisted(urlLike, whitelist) {
+  if (!urlLike || !Array.isArray(whitelist) || !whitelist.length) return false;
+  try {
+    const normalized = urlLike.startsWith('http') ? urlLike : `https://${urlLike}`;
+    const hostname = new URL(normalized).hostname.toLowerCase();
+    return whitelist
+      .map(d => String(d || '').trim().toLowerCase())
+      .some(d => d && (hostname === d || hostname.endsWith(`.${d}`)));
+  } catch {
+    return false;
+  }
+}
+
 /**
- * @returns {boolean} true if the message was a link and was fully handled
- * (deleted/warned/kicked) — caller should stop further processing.
+ * Apply the configured antilink action (delete/kick/warn) for a violation.
+ * `reason` is used in the warning log / message shown to the group.
+ */
+async function applyAntilinkAction(sock, msg, groupSettings, deps, reason) {
+  const from = msg.key.remoteJid;
+  const sender = msg.key.participant || msg.key.remoteJid;
+  const { getDb } = deps;
+
+  try {
+    await sock.sendMessage(from, { delete: msg.key });
+  } catch (e) {
+    logger.error('ANTILINK', 'Failed to delete offending message:', e);
+  }
+
+  const action = (groupSettings.antilinkAction || 'delete').toLowerCase();
+
+  if (action === 'warn') {
+    const warnData = getDb(sock).addWarning(from, sender, reason);
+    const maxWarnings = getAntilinkWarnLimit(groupSettings);
+    if (warnData.count >= maxWarnings) {
+      await sock.groupParticipantsUpdate(from, [sender], 'remove');
+      await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered (${reason}).\n@${sender.split('@')[0]} was kicked for reaching ${maxWarnings} warnings.`, mentions: [sender] });
+      getDb(sock).clearWarnings(from, sender); // reset after enforcement
+    } else {
+      await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered (${reason}).\nWarning ${warnData.count}/${maxWarnings}. Link removed.`, mentions: [sender] });
+    }
+  } else if (action === 'kick') {
+    await sock.groupParticipantsUpdate(from, [sender], 'remove');
+    await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered (${reason}).\nLink removed and @${sender.split('@')[0]} kicked.`, mentions: [sender] });
+  } else {
+    await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered (${reason}).\nLink removed from @${sender.split('@')[0]}.`, mentions: [sender] });
+  }
+}
+
+/**
+ * @returns {boolean} true if the message was handled (deleted/warned/kicked)
+ * — caller should stop further processing.
  */
 async function handleAntilink(sock, msg, groupMetadata, deps) {
   const { getDb, isOwner, isAdmin, isBotAdmin } = deps;
@@ -46,31 +113,24 @@ async function handleAntilink(sock, msg, groupMetadata, deps) {
     const sender = msg.key.participant || msg.key.remoteJid;
 
     const groupSettings = getDb(sock).getGroupSettings(from);
-    if (!groupSettings || !groupSettings.antilink) return false;
+    if (!groupSettings) return false;
 
     const body = msg.message?.conversation ||
                  msg.message?.extendedTextMessage?.text ||
                  msg.message?.imageMessage?.caption ||
                  msg.message?.videoMessage?.caption || '';
+    if (!body) return false;
 
-    if (!LINK_PATTERN.test(body)) return false;
+    // INCLUDE patterns are always enforced, independent of the general
+    // antilink on/off toggle — these are explicit "always block this"
+    // rules (e.g. a known phishing link).
+    const includeHit = matchesInclude(body, groupSettings.antilinkInclude);
+    const generalHit = groupSettings.antilink && LINK_PATTERN.test(body);
 
-    try {
-      const match = body.match(LINK_PATTERN);
-      const urlLike = match ? match[0] : null;
-      if (urlLike && Array.isArray(groupSettings.antilinkWhitelist) && groupSettings.antilinkWhitelist.length) {
-        const normalized = urlLike.startsWith('http') ? urlLike : `https://${urlLike}`;
-        const hostname = new URL(normalized).hostname.toLowerCase();
-        const allow = groupSettings.antilinkWhitelist
-          .map(d => String(d || '').trim().toLowerCase())
-          .some(d => hostname === d || hostname.endsWith(`.${d}`));
-        if (allow) return false;
-      }
-    } catch (err) {
-      logger.warn('ANTILINK', 'Whitelist parsing failed, proceeding with block:', err?.message);
-    }
+    if (!includeHit && !generalHit) return false;
 
-    // Owner bypass + group admin bypass
+    // Owner + group admin bypass (applies to both include and general hits —
+    // these are still moderation actions, not a hard account-level block).
     const senderIsAdmin = await isAdmin(sock, sender, from, groupMetadata);
     if (senderIsAdmin || isOwner(sender)) return false;
 
@@ -80,30 +140,17 @@ async function handleAntilink(sock, msg, groupMetadata, deps) {
       return false;
     }
 
-    const action = (groupSettings.antilinkAction || 'delete').toLowerCase();
-
-    try {
-      await sock.sendMessage(from, { delete: msg.key });
-    } catch (e) {
-      logger.error('ANTILINK', 'Failed to delete offending message:', e);
+    if (includeHit) {
+      await applyAntilinkAction(sock, msg, groupSettings, deps, `matched include pattern "${includeHit}"`);
+      return true;
     }
 
-    if (action === 'warn') {
-      const warnData = getDb(sock).addWarning(from, sender, 'Anti-link policy violation');
-      const maxWarnings = config.maxWarnings || 3;
-      if (warnData.count >= maxWarnings) {
-        await sock.groupParticipantsUpdate(from, [sender], 'remove');
-        await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered.\n@${sender.split('@')[0]} was kicked for reaching max warnings.`, mentions: [sender] });
-      } else {
-        await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered.\nWarning ${warnData.count}/${maxWarnings}. Link removed.`, mentions: [sender] });
-      }
-    } else if (action === 'kick') {
-      await sock.groupParticipantsUpdate(from, [sender], 'remove');
-      await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered.\nLink removed and @${sender.split('@')[0]} kicked.`, mentions: [sender] });
-    } else {
-      await sock.sendMessage(from, { text: `🔗 *Anti-Link* triggered.\nLink removed from @${sender.split('@')[0]}.`, mentions: [sender] });
-    }
+    // General link detection — respect the EXCLUDE (whitelist) list.
+    const match = body.match(LINK_PATTERN);
+    const urlLike = match ? match[0] : null;
+    if (isWhitelisted(urlLike, groupSettings.antilinkWhitelist)) return false;
 
+    await applyAntilinkAction(sock, msg, groupSettings, deps, 'link detected');
     return true;
   } catch (error) {
     logger.error('ANTILINK', 'Handler error:', error);
@@ -115,7 +162,9 @@ async function handleAntilink(sock, msg, groupMetadata, deps) {
 // ANTICALL
 // ---------------------------------------------------------------------------
 
-/** Read the effective anticall state: DB global setting, falling back to config default. */
+const DEFAULT_ANTICALL_MESSAGE = '🚫 *Policy:* Voice and video calls are not permitted on this number. You have been blocked.';
+
+/** Read the effective anticall state for THIS session only. */
 function isAntiCallEnabled(sock, deps) {
   const { getDb } = deps;
   const dbValue = getDb(sock).getGlobalSetting('anticall');
@@ -123,23 +172,38 @@ function isAntiCallEnabled(sock, deps) {
   return Boolean(config.defaultGroupSettings?.anticall);
 }
 
-/** Toggle anticall globally. Used by commands/owner/anticall.js */
+/** Toggle anticall for THIS session only. */
 function setAntiCallEnabled(sock, deps, enabled) {
   const { getDb } = deps;
   return getDb(sock).setGlobalSetting('anticall', Boolean(enabled));
 }
 
+/** Get the configured rejection message for THIS session. */
+function getAntiCallMessage(sock, deps) {
+  const { getDb } = deps;
+  const msgText = getDb(sock).getGlobalSetting('anticallMessage');
+  return (typeof msgText === 'string' && msgText.trim()) ? msgText.trim() : DEFAULT_ANTICALL_MESSAGE;
+}
+
+/** Set the rejection message for THIS session. */
+function setAntiCallMessage(sock, deps, text) {
+  const { getDb } = deps;
+  return getDb(sock).setGlobalSetting('anticallMessage', String(text || '').trim());
+}
+
 /**
  * Wire up the incoming-call listener. Call once per socket, right after
- * the socket is created (same as before).
+ * the socket is created. Only rejects/blocks calls made TO this specific
+ * connected number, and only if THIS number has anticall enabled.
  */
 function initializeAntiCall(sock, deps) {
   if (!sock?.ev) return;
-  logger.log('ANTICALL', 'Module armed.');
+  logger.log('ANTICALL', `Module armed for ${sock.user?.id?.split(':')[0] || 'session'}.`);
 
   sock.ev.on('call', async (calls) => {
     try {
       if (!isAntiCallEnabled(sock, deps)) return;
+      const message = getAntiCallMessage(sock, deps);
 
       for (const call of calls) {
         if (call.status !== 'offer') continue;
@@ -150,9 +214,7 @@ function initializeAntiCall(sock, deps) {
           logger.error('ANTICALL', 'rejectCall failed:', e);
         }
         try {
-          await sock.sendMessage(call.from, {
-            text: '🚫 *Policy:* Voice and video calls are not permitted on this number. You have been blocked.'
-          });
+          await sock.sendMessage(call.from, { text: message });
         } catch (e) { /* best effort */ }
         try {
           await sock.updateBlockStatus(call.from, 'block');
@@ -170,5 +232,8 @@ module.exports = {
   handleAntilink,
   initializeAntiCall,
   isAntiCallEnabled,
-  setAntiCallEnabled
+  setAntiCallEnabled,
+  getAntiCallMessage,
+  setAntiCallMessage,
+  getAntilinkWarnLimit
 };
