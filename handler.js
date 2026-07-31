@@ -599,7 +599,11 @@ const handleMessage = async (sock, msg) => {
       // command routing (previously only called from a racy fire-and-forget
       // spot in proboy.js, after handleMessage had already fully run).
       // ====================================================================
-      if (groupSettings.antilink) {
+      // Call antiSystem whenever general antilink is on, OR whenever there's
+      // an "always block this" include list configured — include patterns
+      // must fire even if the general antilink toggle itself is off.
+      const hasIncludeRules = Array.isArray(groupSettings.antilinkInclude) && groupSettings.antilinkInclude.length > 0;
+      if (groupSettings.antilink || hasIncludeRules) {
         try {
           const linkHandled = await antiSystem.handleAntilink(sock, msg, groupMetadata, antiSystemDeps);
           if (linkHandled) return false; // message was a link and was dealt with — stop here
