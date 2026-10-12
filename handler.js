@@ -48,9 +48,20 @@ const buttonManager = require('./utils/buttonManager');
 const automationEngine = require('./utils/automationEngine');
 const logger = require('./utils/logger');
 
-// Group metadata cache to prevent rate limiting
-const groupMetadataCache = new Map();
+const memoryGuard = require('./utils/memoryGuard');
+
+// Group metadata cache to prevent rate limiting.
+// STABILITY FIX: this used to be an unbounded Map (every group seen by every
+// session, full participant lists, kept forever). It is now bounded (LRU) and
+// entries older than STALE_TTL are dropped. CACHE_TTL is unchanged (freshness
+// window); STALE_TTL only bounds how long an entry may be used as a fallback
+// when the live query fails.
+const groupMetadataCache = new memoryGuard.BoundedMap(150, { ttlMs: 10 * 60 * 1000 });
 const CACHE_TTL = 60000; // 1 minute cache
+
+// Coalesce concurrent live metadata requests for the same group (N sessions
+// receiving the same group message used to fire N identical IQ queries).
+const inflightMetadata = new Map(); // groupId -> Promise<metadata|null>
 
 // Load all commands
 const commands = loadCommands();
@@ -150,20 +161,36 @@ const getCachedGroupMetadata = async (sock, groupId) => {
   }
 };
 
-// Live group metadata getter (always fresh, no cache) - for admin checks
-const getLiveGroupMetadata = async (sock, groupId) => {
-  try {
-    const metadata = await sock.groupMetadata(groupId);
-    groupMetadataCache.set(groupId, {
-      data: metadata,
-      timestamp: Date.now()
-    });
-    return metadata;
-  } catch (error) {
+// Live group metadata getter - for admin checks.
+// maxAgeMs = 0 (default) keeps the original contract: always a fresh query.
+// A positive maxAgeMs accepts a cached copy that young. Concurrent fresh
+// queries for the same group are coalesced into one request.
+const getLiveGroupMetadata = async (sock, groupId, maxAgeMs = 0) => {
+  if (maxAgeMs > 0) {
     const cached = groupMetadataCache.get(groupId);
-    if (cached) return cached.data;
-    return null;
+    if (cached && cached.data && Date.now() - cached.timestamp < maxAgeMs) return cached.data;
   }
+  const pending = inflightMetadata.get(groupId);
+  if (pending) return pending;
+
+  const run = (async () => {
+    try {
+      const metadata = await sock.groupMetadata(groupId);
+      groupMetadataCache.set(groupId, {
+        data: metadata,
+        timestamp: Date.now()
+      });
+      return metadata;
+    } catch (error) {
+      const cached = groupMetadataCache.get(groupId);
+      if (cached) return cached.data;
+      return null;
+    } finally {
+      inflightMetadata.delete(groupId);
+    }
+  })();
+  inflightMetadata.set(groupId, run);
+  return run;
 };
 
 // Alias for backward compatibility (non-admin features use cached)
@@ -281,8 +308,13 @@ const getDisplaySender = (sender) => {
 // Backwards compatibility for code paths that haven't been migrated yet
 const database = defaultDatabase;
 
-// LID mapping cache
-const lidMappingCache = new Map();
+// LID mapping cache.
+// STABILITY FIX: was an unbounded Map that also cached "not found" forever (so
+// a mapping learned later was never seen until restart). Now bounded; misses
+// are re-checked after 5 minutes, hits are kept for 1 hour.
+const lidMappingCache = new memoryGuard.BoundedMap(5000);
+const LID_HIT_TTL_MS = 60 * 60 * 1000;
+const LID_MISS_TTL_MS = 5 * 60 * 1000;
 let authDirCache = { expiresAt: 0, dirs: [] };
 
 const normalizeJid = (jid) => {
@@ -340,14 +372,14 @@ const getLidMappingValue = (user, direction) => {
     try {
       const raw = fs.readFileSync(filePath, 'utf8').trim();
       const value = raw ? JSON.parse(raw) : null;
-      lidMappingCache.set(cacheKey, value || null);
+      lidMappingCache.set(cacheKey, value || null, value ? LID_HIT_TTL_MS : LID_MISS_TTL_MS);
       return value || null;
     } catch (error) {
       continue;
     }
   }
 
-  lidMappingCache.set(cacheKey, null);
+  lidMappingCache.set(cacheKey, null, LID_MISS_TTL_MS);
   return null;
 };
 
@@ -468,7 +500,10 @@ const isAdmin = async (sock, participant, groupId, groupMetadata = null) => {
   return foundParticipant.admin === 'admin' || foundParticipant.admin === 'superadmin';
 };
 
-const isBotAdmin = async (sock, groupId, groupMetadata = null) => {
+// maxAgeMs: 0 (default) = always query live (original behaviour). The passive
+// per-message pre-computation in handleMessage passes a short window instead,
+// so a busy group no longer triggers one live IQ query per message per session.
+const isBotAdmin = async (sock, groupId, groupMetadata = null, maxAgeMs = 0) => {
   if (!sock.user || !groupId) return false;
   if (!groupId.endsWith('@g.us')) return false;
 
@@ -481,7 +516,7 @@ const isBotAdmin = async (sock, groupId, groupMetadata = null) => {
     const botJids = [botId];
     if (botLid) botJids.push(botLid);
 
-    const liveMetadata = await getLiveGroupMetadata(sock, groupId);
+    const liveMetadata = await getLiveGroupMetadata(sock, groupId, maxAgeMs);
     if (!liveMetadata || !liveMetadata.participants) return false;
 
     const participant = findParticipant(liveMetadata.participants, botJids);
@@ -527,6 +562,11 @@ async function handleButtonCommand(sock, msg, extra) {
 
 // Dependency bag passed into utils/antiSystem.js so it doesn't need to
 // duplicate any of the identity/permission helpers above.
+// Passive (per-message) bot-admin status may be this stale; command-time checks
+// (botAdminNeeded, antilink enforcement, ...) still query fresh. The cache entry
+// is also dropped immediately on any participant/admin change (handleGroupUpdate).
+const BOT_ADMIN_PASSIVE_MAX_AGE_MS = 20000;
+
 const antiSystemDeps = { getDb, isOwner, isAdmin, isBotAdmin };
 
 // Main message handler
@@ -621,7 +661,7 @@ const handleMessage = async (sock, msg) => {
 
     // ==================== ANTIDELETE HOOK ====================
     const senderIsAdmin = isGroup ? await isAdmin(sock, sender, from, groupMetadata) : false;
-    const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata) : false;
+    const botIsAdmin = isGroup ? await isBotAdmin(sock, from, groupMetadata, BOT_ADMIN_PASSIVE_MAX_AGE_MS) : false;
 
     const hookExtra = {
       from,
@@ -1066,6 +1106,7 @@ const handleMessage = async (sock, msg) => {
 const handleGroupUpdate = async (sock, update) => {
   try {
     const { id, participants, action } = update;
+    if (id) groupMetadataCache.delete(id); // membership/admin changed: never serve stale metadata
 
     if (!id || !id.endsWith('@g.us')) {
       return false;
@@ -1407,7 +1448,25 @@ const initializeAntiCall = (sock) => {
   antiSystem.initializeAntiCall(sock, antiSystemDeps);
 };
 
+// Real cache maintenance (proboy.js used to try to clear these through
+// properties this module never exported, so nothing was ever cleared).
+const pruneCaches = (severity = 'soft') => {
+  const before = { meta: groupMetadataCache.size, lid: lidMappingCache.size };
+  groupMetadataCache.sweep();
+  lidMappingCache.sweep();
+  if (severity === 'hard') {
+    groupMetadataCache.shrinkTo(40);
+    lidMappingCache.shrinkTo(500);
+    authDirCache = { expiresAt: 0, dirs: [] };
+  }
+  return { before, after: { meta: groupMetadataCache.size, lid: lidMappingCache.size } };
+};
+memoryGuard.registerPrune('handler', pruneCaches);
+const getCacheStats = () => ({ groupMetadata: groupMetadataCache.size, lidMapping: lidMappingCache.size, inflightMetadata: inflightMetadata.size });
+
 module.exports = {
+  pruneCaches,
+  getCacheStats,
   handleMessage,
   initializePlugins,
   handleGroupUpdate,
