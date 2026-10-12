@@ -16,12 +16,10 @@ const downloadMedia = async (message) => {
     const messageType = Object.keys(message)[0];
     const stream = await downloadContentFromMessage(message[messageType], messageType.replace('Message', ''));
     
-    let buffer = Buffer.from([]);
-    for await (const chunk of stream) {
-      buffer = Buffer.concat([buffer, chunk]);
-    }
-    
-    return buffer;
+    // O(n) collection (was Buffer.concat per chunk = O(n^2) copies and ~2x peak RAM)
+    const chunks = [];
+    for await (const chunk of stream) chunks.push(chunk);
+    return Buffer.concat(chunks);
   } catch (error) {
     throw new Error(`Media download failed: ${error.message}`);
   }
