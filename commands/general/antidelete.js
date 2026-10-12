@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../../config');
 const defaultDatabase = require('../../database');
+const memoryGuard = require('../../utils/memoryGuard');
 
 const DB_DIR = path.join(__dirname, '..', '..', 'database');
 const CACHE_FILE = path.join(DB_DIR, 'antidelete_cache_v2.json');
@@ -53,8 +54,14 @@ const safeReadJson = (filePath) => {
   } catch { return null; }
 };
 
+// Atomic + compact (was: pretty-printed, in-place write -> a SIGKILL mid-write
+// truncated the file and the whole cache was lost on next start).
 const safeWriteJson = (filePath, data) => {
-  try { fs.writeFileSync(filePath, JSON.stringify(data, null, 2)); } catch {}
+  const tmp = `${filePath}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, filePath);
+  } catch { try { fs.unlinkSync(tmp); } catch {} }
 };
 
 const getMessageContent = (msg) => {
@@ -301,17 +308,53 @@ const loadCache = () => {
   pruneCache();
 };
 
-const saveCache = () => { pruneCache(); safeWriteJson(CACHE_FILE, Object.fromEntries(messageCache)); };
+// Persist only when something changed (was: re-serialise up to 2000 records
+// every 2s while messages flow AND every 60s unconditionally).
+let cacheDirty = false;
+const saveCache = () => {
+  if (!cacheDirty) return;
+  cacheDirty = false;
+  pruneCache();
+  safeWriteJson(CACHE_FILE, Object.fromEntries(messageCache));
+};
 loadCache();
 let saveScheduled = false;
 const scheduleSave = () => {
+  cacheDirty = true;
   if (saveScheduled) return;
   saveScheduled = true;
-  setTimeout(() => { saveScheduled=false; saveCache(); }, 2000);
+  const t = setTimeout(() => { saveScheduled=false; saveCache(); }, 10000);
+  if (t.unref) t.unref();
 };
-setInterval(() => saveCache(), 60*1000);
+const saveTimer = setInterval(() => saveCache(), 60*1000);
+if (saveTimer.unref) saveTimer.unref();
 cleanupMediaDir();
-setInterval(() => cleanupMediaDir(), 5*60*1000);
+const mediaTimer = setInterval(() => cleanupMediaDir(), 5*60*1000);
+if (mediaTimer.unref) mediaTimer.unref();
+
+// Records currently being built (same message arrives once PER connected
+// session; previously each session downloaded the same media again).
+const inflightRecords = new Set();
+let activeMediaDownloads = 0;
+const MAX_PARALLEL_MEDIA_DOWNLOADS = 1;
+const declaredSize = (mc) => {
+  const v = mc?.fileLength;
+  const n = Number(v && typeof v.toString === 'function' ? v.toString() : v);
+  return Number.isFinite(n) ? n : 0;
+};
+memoryGuard.registerPrune('antidelete', (severity) => {
+  const before = messageCache.size;
+  pruneCache();
+  if (severity === 'hard' && messageCache.size > 500) {
+    const sorted = [...messageCache.entries()].sort((a,b) => (a[1]?.timestamp||0)-(b[1]?.timestamp||0));
+    for (let i = 0; i < sorted.length - 500; i++) {
+      const [k, v] = sorted[i];
+      if (v?.media?.path) { try { fs.unlinkSync(v.media.path); } catch {} }
+      messageCache.delete(k);
+    }
+  }
+  return { before, after: messageCache.size };
+});
 
 // ==================== Plugin Export ====================
 module.exports = {
@@ -399,6 +442,13 @@ module.exports = {
       if (chatSettings?.antidelete === false) return;
     }
 
+    // Dedupe across sessions: the same group message is delivered to every
+    // connected session in that group; record (and download media) only once.
+    const recKey = cacheKey(from, msgId);
+    if (messageCache.has(recKey) || inflightRecords.has(recKey)) return;
+    inflightRecords.add(recKey);
+    try {
+
     // Normalize sender immediately using our local normalizer
     const normalizedSender = normalizeJidWithLid(sender) || sender;
 
@@ -425,7 +475,15 @@ module.exports = {
     }
 
     if (['imageMessage','videoMessage','audioMessage','documentMessage','stickerMessage'].includes(type)) {
-      try {
+      // Skip (text/metadata record is still kept) instead of OOM-killing every
+      // session: oversize files were previously downloaded in full and only
+      // THEN discarded for being too large.
+      const declared = declaredSize(msgContent);
+      const tooBig = declared > MAX_SINGLE_MEDIA_BYTES;
+      const noRoom = !memoryGuard.canAllocate(declared || 2 * 1024 * 1024);
+      const busy = activeMediaDownloads >= MAX_PARALLEL_MEDIA_DOWNLOADS;
+      if (!tooBig && !noRoom && !busy) try {
+        activeMediaDownloads++;
         const buffer = await downloadMediaMessage(
           { ...msg, message: content },
           'buffer',
@@ -448,11 +506,14 @@ module.exports = {
           fs.writeFileSync(filePath, buffer);
           record.media = { path: filePath, mimetype, fileName, ptt: !!msgContent?.ptt };
         }
-      } catch {}
+      } catch {} finally { activeMediaDownloads--; }
     }
 
-    messageCache.set(cacheKey(from, msgId), record);
+    messageCache.set(recKey, record);
     scheduleSave();
+    } finally {
+      inflightRecords.delete(recKey);
+    }
   },
 
   async handleDelete(sock, deleteInfo) {

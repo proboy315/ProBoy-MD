@@ -82,15 +82,24 @@ module.exports = {
                         : mtype === 'videoMessage' ? 'video'
                         : 'audio';
 
+      // Low-memory guard: refuse politely instead of getting the whole bot OOM-killed
+      const __declared = Number(actualMsg[mtype]?.fileLength?.toString?.() ?? 0) || 0;
+      if (!require('../../utils/memoryGuard').canAllocate(__declared || 2 * 1024 * 1024)) {
+        return await sock.sendMessage(
+          msg.key.remoteJid,
+          { text: '⚠️ Server memory is low right now. Please try again in a minute.' },
+          { quoted: msg }
+        );
+      }
+
       const mediaStream = await downloadContentFromMessage(
         actualMsg[mtype],
         downloadType
       );
 
-      let buffer = Buffer.from([]);
-      for await (const chunk of mediaStream) {
-        buffer = Buffer.concat([buffer, chunk]);
-      }
+      const __chunks = [];
+      for await (const chunk of mediaStream) __chunks.push(chunk);
+      const buffer = Buffer.concat(__chunks);
 
       const caption = actualMsg[mtype]?.caption || '';
 
