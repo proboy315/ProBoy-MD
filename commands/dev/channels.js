@@ -1,10 +1,11 @@
 /**
  * .channels - list / manage the WhatsApp Channels the bot account owns or administers.
  *
- * Baileys has no "list my channels" call, so candidates come from: the remote
- * ids.json (channelManager), channels the bot has seen posts from, and
- * `.channels add <jid|link>`. Each candidate is VERIFIED with WhatsApp
- * (newsletterMetadata -> viewer role); only OWNER/ADMIN channels are listed.
+ * The list comes LIVE from WhatsApp (the account's own subscribed-channels query,
+ * with the role of this account in each). Owner/admin channels are also written to
+ * a separate file: database/my_admin_channels.json  (send it with `.channels export`).
+ * If the live query fails, it falls back to the tracked list (ids.json, observed
+ * posts, `.channels add`) and verifies each one with newsletterMetadata.
  */
 const config = require('../../config');
 const hub = require('../../utils/channelHub');
@@ -38,7 +39,7 @@ module.exports = {
   aliases: ['mychannels', 'chlist'],
   category: 'dev',
   description: 'List WhatsApp Channels you own/admin (verified with WhatsApp) and manage the channel list',
-  usage: `${config.prefix}channels [all | add <jid|link> | remove <jid> | refresh | log | logdest <bot|jid|default> | status]`,
+  usage: `${config.prefix}channels [all | sync | export | add <jid|link> | remove <jid> | refresh | log | logdest <bot|jid|default> | status]`,
   ownerOnly: true,
 
   // called once per connected session by handler.initializePlugins(): starts the deletion watcher
@@ -94,10 +95,41 @@ module.exports = {
         return reply(`*📡 Channel system*\nTracked channels: ${st.channels} (admin/owner: ${st.admin})\nCached posts: ${st.cachedPosts}\nDeletion watcher: ${st.polling ? `on (every ${Math.round(st.pollMs / 60000)} min)` : 'off'}\nLast check: ${st.lastPoll.at ? new Date(st.lastPoll.at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'never'} (${st.lastPoll.channels} channels, ${st.lastPoll.newPosts} new posts, ${st.lastPoll.deletions} deletions)`);
       }
 
-      // ---- list (default / all / refresh) ----
+      if (sub === 'export' || sub === 'file') {
+        let obj = hub.readAdminFile();
+        if (!obj.accounts || !Object.keys(obj.accounts).length) {
+          await reply('⏳ No saved file yet - syncing from WhatsApp first...');
+          const r = await hub.syncMyChannels(sock, { force: true });
+          if (!r.ok) return reply(`❌ Live sync failed: ${r.error}`);
+          obj = hub.readAdminFile();
+        }
+        await sock.sendMessage(extra.from, { document: Buffer.from(JSON.stringify(obj, null, 2)), mimetype: 'application/json', fileName: 'my_admin_channels.json' }, { quoted: msg });
+        return;
+      }
+
+      // ---- list (default / all / sync / refresh) ----
       const showAll = sub === 'all';
-      const force = sub === 'refresh';
+      const force = sub === 'refresh' || sub === 'sync';
       await react('⏳');
+
+      // 1) preferred: live list from WhatsApp itself
+      const live = await hub.syncMyChannels(sock, { force });
+      if (live.ok) {
+        const rows = (showAll ? live.all : live.admin).slice();
+        const owners = live.admin.filter((r) => hub.roleFor(r, sock) === 'OWNER').length;
+        const head = `📡 Live from WhatsApp: ${live.total} channel(s) followed • 👑 ${owners} owner • 🛡️ ${live.admin.length - owners} admin${live.noRole ? ` • ❔ ${live.noRole} role unknown` : ''}\n💾 Owner/admin list saved: database/my_admin_channels.json ${live.saved ? '✅' : '⚠️ (write failed)'}  — send it with ${config.prefix}channels export`;
+        if (!rows.length) { await react('❌'); return reply(`${head}\n\n📭 No channel where this account is owner/admin.\nUse ${config.prefix}channels all to see every followed channel.`); }
+        rows.sort((a, b) => (hub.isAdminFor(b, sock) - hub.isAdminFor(a, sock)) || String(a.name).localeCompare(String(b.name)));
+        const blocks = rows.map((r, i) => describe(r, sock, i + 1));
+        const parts = chunkText([`*📢 ${showAll ? 'All my channels' : 'My channels (owner/admin)'}* — ${rows.length}`, '', ...blocks.flatMap((b) => [b, ''])]);
+        await reply(head);
+        for (const p of parts) await reply(p);
+        await react('✅');
+        return;
+      }
+
+      // 2) fallback: tracked list, each verified with WhatsApp
+      await reply(`⚠️ Live channel list failed (${live.error}).\nFalling back to the tracked list...`);
       try { for (const e of require('../../utils/channelManager').getNewsletters()) hub.ensureChannel(e.id, 'managed'); } catch { /* optional */ }
       const all = hub.listChannels();
       if (!all.length) {
