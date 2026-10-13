@@ -526,6 +526,17 @@ module.exports = {
     const key = deleteInfo?.key;
     if (!key?.id) return;
 
+    // WhatsApp Channel posts: handled by utils/channelHub.js (same destination/format family,
+    // deduplicated, only reported by the session that administers the channel).
+    if (typeof key.remoteJid === 'string' && key.remoteJid.endsWith('@newsletter')) {
+      try {
+        await require('../../utils/channelHub').reportChannelDelete(sock, {
+          jid: key.remoteJid, serverId: key.server_id || null, msgId: key.id, via: 'event', deletedBy: deleteInfo?.deleter || null
+        });
+      } catch { /* never break the normal antidelete flow */ }
+      return;
+    }
+
     const deleteDedupeKey = cacheKey(key.remoteJid || 'unknown', key.id);
     if (processedDeletes.has(deleteDedupeKey)) return;
     processedDeletes.set(deleteDedupeKey, Date.now());
