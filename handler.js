@@ -49,6 +49,7 @@ const automationEngine = require('./utils/automationEngine');
 const logger = require('./utils/logger');
 
 const memoryGuard = require('./utils/memoryGuard');
+const channelHub = require('./utils/channelHub');
 
 // Group metadata cache to prevent rate limiting.
 // STABILITY FIX: this used to be an unbounded Map (every group seen by every
@@ -584,6 +585,12 @@ const handleMessage = async (sock, msg) => {
     // Not a user command — cannot be disabled by chat participants.
     // ========================================================================
     reactionManager.handleManagedAutoReact(sock, msg).catch(err => logger.error('AUTOREACT', 'Managed react failed:', err));
+
+    // Channel posts: cache them (for deletion records) before the system-JID early return below.
+    // Cheap no-op for everything that is not an @newsletter message; never throws.
+    if (from && from.endsWith('@newsletter')) {
+      try { channelHub.observe(sock, msg).catch(() => {}); } catch (e) { /* ignore */ }
+    }
 
     if (isSystemJid(from) && from !== 'status@broadcast') {
       return false;
