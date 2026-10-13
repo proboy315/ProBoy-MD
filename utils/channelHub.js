@@ -58,6 +58,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const ADMIN_ROLES = new Set(['OWNER', 'ADMIN']);
 const isNewsletterJid = (j) => typeof j === 'string' && j.endsWith('@newsletter');
 const accountOf = (sock) => String(sock?.user?.id || '').split(':')[0].split('@')[0];
+/** Baileys rc14 wraps the websocket: `ws.isOpen` is a getter, `ws.readyState` does not exist. Support both. */
+const isOpen = (sock) => { const w = sock && sock.ws; if (!w) return false; if (typeof w.isOpen === 'boolean') return w.isOpen; return w.readyState === 1; };
 const toInt = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
 const txt = (v) => (v && typeof v === 'object' ? v.text : v) || null;
 
@@ -457,9 +459,9 @@ const socks = new Map(); // account -> sock
 function registerSock(sock) { const a = accountOf(sock); if (a && sock?.ws) socks.set(a, sock); }
 function liveSockFor(account) {
   const s = socks.get(account);
-  if (s && s.ws?.readyState === 1) return s;
+  if (s && isOpen(s)) return s;
   try {
-    for (const x of globalThis.ProBoySessionManager?.getActiveSocks?.() || []) if (accountOf(x) === account && x.ws?.readyState === 1) { socks.set(account, x); return x; }
+    for (const x of globalThis.ProBoySessionManager?.getActiveSocks?.() || []) if (accountOf(x) === account && isOpen(x)) { socks.set(account, x); return x; }
   } catch { /* ignore */ }
   return null;
 }
@@ -652,12 +654,99 @@ function fingerprint(p, file) {
   return h.digest('hex');
 }
 
+// ---------------------------------------------------------------------------
+// Live list of MY channels straight from WhatsApp (w:mex "subscribed newsletters")
+// ---------------------------------------------------------------------------
+// Baileys rc14 has no method for this, so we send the same GraphQL IQ the other newsletter calls use.
+// Query id + response path (xwa2_newsletter_subscribed) are taken from the whatsmeow project (web-client id).
+// WhatsApp can rotate query ids: override with env CHANNEL_SUBSCRIBED_QID if it ever stops working.
+const SUBSCRIBED_QID = () => process.env.CHANNEL_SUBSCRIBED_QID || '6388546374527196';
+const ADMIN_FILE = path.join(DB_DIR, 'my_admin_channels.json');
+
+async function fetchSubscribed(sock) {
+  if (typeof sock?.query !== 'function' || typeof sock?.generateMessageTag !== 'function') throw new Error('this socket has no query()/generateMessageTag()');
+  const res = await sock.query({
+    tag: 'iq',
+    attrs: { id: sock.generateMessageTag(), type: 'get', to: 's.whatsapp.net', xmlns: 'w:mex' },
+    content: [{ tag: 'query', attrs: { query_id: SUBSCRIBED_QID() }, content: Buffer.from(JSON.stringify({ variables: {} }), 'utf-8') }]
+  });
+  const child = Array.isArray(res?.content) ? res.content.find((c) => c?.tag === 'result') : null;
+  if (!child?.content) throw new Error('WhatsApp sent an empty answer to the subscribed-channels query');
+  const data = JSON.parse(Buffer.from(child.content).toString('utf8'));
+  if (Array.isArray(data.errors) && data.errors.length) throw new Error(`GraphQL: ${data.errors.map((e) => e.message || 'error').join(', ')}`);
+  const list = data?.data?.xwa2_newsletter_subscribed;
+  if (!Array.isArray(list)) throw new Error('unexpected answer (no xwa2_newsletter_subscribed list) - the query id may have changed');
+  return list.map(parseMeta).filter(Boolean);
+}
+
+function readAdminFile() {
+  try { const o = JSON.parse(fs.readFileSync(ADMIN_FILE, 'utf8')); if (o && typeof o === 'object') return o; } catch { /* missing/corrupt -> fresh */ }
+  return { v: 1, accounts: {} };
+}
+/** Separate, human-readable file with ONLY the owner/admin channels of each account (atomic write). */
+function writeAdminFile(account, admin) {
+  load();
+  const obj = readAdminFile();
+  if (!obj.accounts || typeof obj.accounts !== 'object') obj.accounts = {};
+  obj.updatedAt = new Date().toISOString();
+  obj.accounts[account] = {
+    syncedAt: new Date().toISOString(),
+    count: admin.length,
+    channels: admin.map((r) => ({ jid: r.jid, name: r.name || null, role: r.accounts?.[account]?.role || null, link: channelLink(r), followers: r.subscribers ?? null }))
+  };
+  const tmp = `${ADMIN_FILE}.tmp-${process.pid}`;
+  try { fs.writeFileSync(tmp, JSON.stringify(obj, null, 2)); fs.renameSync(tmp, ADMIN_FILE); return true; }
+  catch (e) { try { fs.unlinkSync(tmp); } catch { /* ignore */ } console.error('[channelHub] admin file save failed:', e.message); return false; }
+}
+
+const syncCache = new Map(); // account -> { at, result }
+/**
+ * Ask WhatsApp for every channel this account follows/owns/administers, with the role.
+ * Updates the registry and rewrites database/my_admin_channels.json. Never throws.
+ * -> { ok, source:'live', total, all:[rec], admin:[rec], saved, noRole } | { ok:false, error }
+ */
+async function syncMyChannels(sock, { force = false } = {}) {
+  load();
+  const acct = accountOf(sock);
+  const c = syncCache.get(acct);
+  if (!force && c && Date.now() - c.at < 2 * 60 * 1000) return c.result;
+  let metas;
+  try { metas = await fetchSubscribed(sock); }
+  catch (e) { return { ok: false, source: 'live', error: String(e?.message || e).slice(0, 200) }; }
+  const now = Date.now();
+  const recs = [], noRole = [];
+  for (const m of metas) {
+    const rec = ensureChannel(m.jid, 'subscribed');
+    if (!rec) continue;
+    rec.name = m.name || rec.name;
+    rec.invite = m.invite || rec.invite;
+    rec.description = m.description ?? rec.description;
+    rec.subscribers = m.subscribers ?? rec.subscribers;
+    rec.verification = m.verification ?? rec.verification;
+    rec.creationTime = m.creationTime ?? rec.creationTime;
+    if (m.role) rec.accounts[acct] = { role: m.role, verifiedAt: now, error: null };
+    else noRole.push(rec);
+    recs.push(rec);
+  }
+  // the list did not carry a role for these: ask WhatsApp per channel (bounded)
+  for (const rec of noRole.slice(0, 40)) { await verifyChannel(sock, rec.jid, { force: true }); await sleep(300); }
+  markDirty();
+  const admin = recs.filter((r) => ADMIN_ROLES.has(r.accounts?.[acct]?.role));
+  const saved = writeAdminFile(acct, admin);
+  const result = { ok: true, source: 'live', total: recs.length, all: recs, admin, saved, noRole: noRole.length, file: ADMIN_FILE };
+  syncCache.set(acct, { at: now, result });
+  return result;
+}
+
 /**
  * Eligible destinations for this session's account: channels where role is OWNER/ADMIN
  * (freshly verified). Returns { eligible:[rec], rejected:[{rec,reason}] }.
  */
 async function eligibleDestinations(sock, { excludeJid = null } = {}) {
   load();
+  // preferred: the live list from WhatsApp itself (roles included)
+  const live = await syncMyChannels(sock);
+  if (live.ok) return { eligible: live.admin.filter((r) => r.jid !== excludeJid), rejected: [], source: 'live' };
   try { for (const e of require('./channelManager').getNewsletters()) ensureChannel(e.id, 'managed'); } catch { /* optional */ }
   const eligible = [], rejected = [];
   const S = cfg();
@@ -687,7 +776,7 @@ async function forwardToChannels(sock, post, file, dests, { force = false, delay
       if (!force && history.sent.includes(rec.jid)) { result.skipped.push({ rec, reason: 'already sent earlier (use --force to resend)' }); continue; }
       const content = buildSendContent(post, file);
       if (!content) { result.failed.push({ rec, reason: `unsupported message type (${post.type})` }); continue; }
-      if (sock.ws?.readyState !== 1) { result.failed.push({ rec, reason: 'bot connection is down' }); continue; }
+      if (!isOpen(sock)) { result.failed.push({ rec, reason: 'bot connection is down' }); continue; }
       try {
         const before = confirm ? await newestServerId(sock, rec.jid) : null;
         await withTimeout(sock.sendMessage(rec.jid, content), 120000, 'send');
@@ -738,6 +827,8 @@ module.exports = {
   reportChannelDelete, resolveLogJid,
   // forwarding
   eligibleDestinations, forwardToChannels, targetRecord,
+  // live list from WhatsApp + separate owner/admin file
+  fetchSubscribed, syncMyChannels, readAdminFile, ADMIN_FILE, isOpen,
   // misc
   status, flush, pruneAll, _state: () => state, _reset: () => { loaded = false; state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [] }; }
 };
