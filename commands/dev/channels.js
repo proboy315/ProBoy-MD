@@ -39,7 +39,7 @@ module.exports = {
   aliases: ['mychannels', 'chlist'],
   category: 'dev',
   description: 'List WhatsApp Channels you own/admin (verified with WhatsApp) and manage the channel list',
-  usage: `${config.prefix}channels [all | sync | export | add <jid|link> | remove <jid> | refresh | log | logdest <bot|jid|default> | status]`,
+  usage: `${config.prefix}channels [all | sync | syncall | sessions | export | add <jid|link> | remove <jid> | refresh | log | logdest <bot|jid|default> | status]`,
   ownerOnly: true,
 
   // called once per connected session by handler.initializePlugins(): starts the deletion watcher
@@ -93,6 +93,34 @@ module.exports = {
       if (sub === 'status') {
         const st = hub.status();
         return reply(`*📡 Channel system*\nTracked channels: ${st.channels} (admin/owner: ${st.admin})\nCached posts: ${st.cachedPosts}\nDeletion watcher: ${st.polling ? `on (every ${Math.round(st.pollMs / 60000)} min)` : 'off'}\nLast check: ${st.lastPoll.at ? new Date(st.lastPoll.at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'never'} (${st.lastPoll.channels} channels, ${st.lastPoll.newPosts} new posts, ${st.lastPoll.deletions} deletions)`);
+      }
+
+      if (sub === 'sessions') {
+        const rows = hub.savedAccounts();
+        if (!rows.length) return reply(`📭 Nothing saved yet. Run ${config.prefix}channels sync (this session) or ${config.prefix}channels syncall (all connected sessions).`);
+        const lines = ['*🗂️ Saved: which session administers which channels*', ''];
+        for (const r of rows) {
+          const ago = r.syncedAt ? Math.round((Date.now() - Date.parse(r.syncedAt)) / 60000) : '?';
+          lines.push(`📱 *+${r.account}* — ${r.count} channel(s) • synced ${ago} min ago`);
+          for (const c of r.channels.slice(0, 15)) lines.push(`   ${c.role === 'OWNER' ? '👑' : '🛡️'} ${c.name || c.jid}`);
+          if (r.channels.length > 15) lines.push(`   …and ${r.channels.length - 15} more`);
+          lines.push('');
+        }
+        for (const p of chunkText(lines)) await reply(p);
+        return;
+      }
+
+      if (sub === 'syncall') {
+        await react('⏳');
+        await reply('🔄 Syncing every connected session with WhatsApp (one by one, this takes a moment)...');
+        const r = await hub.syncAllSessions({ force: true });
+        const lines = [`*🔄 Sync finished* — ${r.ok}/${r.total} session(s) updated`];
+        for (const x of r.rows) lines.push(`• +${x.account}: follows ${x.followed}, owner/admin of ${x.admin}`);
+        if (r.failed.length) lines.push('', `⚠️ Failed (${r.failed.length}):`, ...r.failed.slice(0, 10).map((f) => `• +${f.account}: ${f.error}`));
+        lines.push('', `💾 Saved in database/my_admin_channels.json — see ${config.prefix}channels sessions`);
+        await react('✅');
+        for (const p of chunkText(lines)) await reply(p);
+        return;
       }
 
       if (sub === 'export' || sub === 'file') {

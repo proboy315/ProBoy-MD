@@ -2,11 +2,16 @@
  * .cforward - post one message to ALL channels this account owns/administers.
  *   Mode A: reply to a post with  .cforward
  *   Mode B: .cforward https://whatsapp.com/channel/<code>/<postId>
- * Flags: --force  (resend even if the same content already went to a channel)
+ * Flags: --force  resend even if the same content already went to a channel
+ *        --sync   ignore the saved channel list and ask WhatsApp again
+ *        --plain  post as a normal message (no "Forwarded" label)
+ *        --fwd    add the "Forwarded" label even if the source is not a channel post
  *
- * Sending uses sock.sendMessage('<id>@newsletter', ...), the only posting API
- * Baileys has. Only channels where WhatsApp says this account is OWNER/ADMIN
- * are targeted. Every channel is handled separately; a final summary is sent.
+ * Which channels? The session that received the command is looked up in the saved
+ * list database/my_admin_channels.json (owner/admin channels of THAT session; refreshed
+ * from WhatsApp when older than 1 h). Posting goes through hub.postToChannel (own
+ * newsletter upload + send with WhatsApp's ack), because Baileys rc14's sendMessage
+ * cannot send channel media. Every channel is handled separately; a summary is sent.
  */
 const fs = require('fs');
 const config = require('../../config');
@@ -29,14 +34,15 @@ module.exports = {
     let tmpFile = null;
     try {
       hub.registerSock(sock);
-      const force = args.some((a) => a.toLowerCase() === '--force');
+      const has = (f) => args.some((a) => a.toLowerCase() === f);
+      const force = has('--force'), forceSync = has('--sync'), plain = has('--plain'), forceFwd = has('--fwd');
       const rest = args.filter((a) => !a.startsWith('--'));
       const linkArg = rest.find((a) => /whatsapp\.com\/channel\//i.test(a));
       // explicit targets:  .cforward 1203...@newsletter,1204...@newsletter   (bare numbers of 8+ digits get @newsletter)
       const targets = [...new Set(rest.filter((a) => !/whatsapp\.com\/channel\//i.test(a)).join(',').split(/[,\s]+/).map((t) => t.trim()).filter(Boolean)
         .map((t) => (/@newsletter$/i.test(t) ? t.toLowerCase() : (/^\d{8,}$/.test(t) ? `${t}@newsletter` : null))).filter(Boolean))];
 
-      let post = null, sourceJid = null, sourceLabel = '';
+      let post = null, sourceJid = null, sourceLabel = '', fwdInfo = null;
 
       // -------- Mode B: link --------
       if (linkArg) {
@@ -71,13 +77,14 @@ module.exports = {
           }
         }
         sourceLabel = `${src.rec.name || sourceJid} / post ${parsed.postId}`;
+        fwdInfo = { jid: sourceJid, serverId: parsed.postId, name: src.rec.name || undefined };
       } else {
         // -------- Mode A: reply --------
         const content = extra.utils?.getMessageContent ? extra.utils.getMessageContent(msg) : msg.message;
         const ctx = content?.extendedTextMessage?.contextInfo || content?.conversation?.contextInfo || null;
         const quoted = ctx?.quotedMessage;
         if (!quoted) {
-          return reply(`ℹ️ *How to use ${config.prefix}cforward*\n\n1) Reply to a post (text/image/video/document/audio/sticker) with ${config.prefix}cforward  → goes to ALL channels you admin\n1b) ${config.prefix}cforward 1203...@newsletter,1204...@newsletter  (reply) → ONLY to those channels\n2) or ${config.prefix}cforward https://whatsapp.com/channel/CODE/POST_ID\n\nAdd --force to resend content that was already sent to a channel.`);
+          return reply(`ℹ️ *How to use ${config.prefix}cforward*\n\n1) Reply to a post (text/image/video/document/audio/sticker) with ${config.prefix}cforward  → goes to ALL channels you admin\n1b) ${config.prefix}cforward 1203...@newsletter,1204...@newsletter  (reply) → ONLY to those channels\n2) or ${config.prefix}cforward https://whatsapp.com/channel/CODE/POST_ID\n\nFlags: --force resend • --sync re-check channels with WhatsApp • --plain no "Forwarded" label • --fwd force the label.`);
         }
         const q = hub.unwrap(quoted);
         const d = hub.describeContent(quoted);
@@ -92,10 +99,12 @@ module.exports = {
           tmpFile = { keep: false, path: saved.path };
         }
         sourceLabel = sourceJid ? `${hub.getChannel(sourceJid)?.name || sourceJid} (replied post)` : 'replied message';
+        const fni = qInner?.contextInfo?.forwardedNewsletterMessageInfo;
+        if (sourceJid) fwdInfo = { jid: sourceJid, serverId: fni?.serverMessageId || undefined, name: fni?.newsletterName || hub.getChannel(sourceJid)?.name || undefined };
       }
 
       // -------- destinations --------
-      let dests, rejected = [];
+      let dests, rejected = [], listInfo = null;
       if (targets.length) {
         // explicit targets: you chose them, so they are NOT filtered by the admin check; WhatsApp is the judge
         dests = [];
@@ -103,21 +112,26 @@ module.exports = {
         if (!dests.length) { await react('❌'); return reply('❌ The only target given is the source channel itself.'); }
         await reply(`🎯 Posting to ${dests.length} target channel(s)${force ? ' (--force)' : ''}...`);
       } else {
-        await reply('🔎 Checking which channels you can post to...');
-        const r = await hub.eligibleDestinations(sock, { excludeJid: sourceJid });
+        const r = await hub.eligibleDestinations(sock, { excludeJid: sourceJid, forceLive: forceSync });
+        listInfo = r;
         dests = r.eligible; rejected = r.rejected;
         if (!dests.length) {
           await react('❌');
           return reply(`❌ No eligible channels: this account is not verified as owner/admin of any tracked channel${sourceJid ? ' (the source channel is skipped)' : ''}.\n\nGive targets directly: ${config.prefix}cforward 1203...@newsletter,1204...@newsletter\nor use ${config.prefix}channels to see/add channels.${rejected.length ? '\n\n⚠️ ' + rejected.slice(0, 5).map((r2) => `${name(r2.rec)}: ${r2.reason}`).join('\n') : ''}`);
         }
-        await reply(`📢 Posting to ${dests.length} channel(s)${force ? ' (--force)' : ''}...`);
+        const ago = listInfo?.syncedAt ? Math.max(0, Math.round((Date.now() - listInfo.syncedAt) / 60000)) : null;
+        const src2 = !listInfo?.source ? 'each tracked channel verified with WhatsApp' : listInfo.source === 'live' ? 'checked live with WhatsApp' : listInfo.source === 'saved' ? `saved list, synced ${ago} min ago` : `saved list (STALE ${ago} min; live check failed: ${listInfo?.liveError || '?'})`;
+        await reply(`📢 Session +${listInfo?.account || '?'} is owner/admin of ${dests.length} channel(s) (${src2}).\nPosting to all of them${force ? ' (--force)' : ''}...`);
       }
-      const res = await hub.forwardToChannels(sock, post, tmpFile?.path || null, dests, { force });
+      const fwd = plain ? null : (fwdInfo || (forceFwd ? {} : null));
+      console.log(`[CFORWARD] session=${hub.accountOf(sock)} type=${post.type} size=${post.size || 0} media=${tmpFile?.path ? 'yes' : 'no'} dests=${dests.length} fwd=${fwd ? (fwd.jid ? 'channel' : 'generic') : 'no'}`);
+      const res = await hub.forwardToChannels(sock, post, tmpFile?.path || null, dests, { force, fwd });
       if (res.busy) { await react('⏳'); return reply('⏳ This exact post is already being forwarded right now. Not sending it twice.'); }
 
       const list = (arr, f) => arr.slice(0, MAX_SHOWN).map(f).join('\n') + (arr.length > MAX_SHOWN ? `\n…and ${arr.length - MAX_SHOWN} more` : '');
-      let out = `*📢 CFORWARD SUMMARY*\nSource: ${sourceLabel}\nType: ${post.type.replace('Message', '')}\n\n✅ *Sent: ${res.sent.length}*`;
-      if (res.sent.length) out += `\n${list(res.sent, (r) => `${r._delivery === 'confirmed' ? '✅' : r._delivery === 'not-seen' ? '⚠️' : '📤'} ${name(r)}${r._delivery === 'confirmed' ? ' — confirmed in channel' : r._delivery === 'not-seen' ? ' — sent, but NOT visible in the channel feed yet (maybe rejected: are you admin there?)' : ' — sent (could not confirm)'}`)}`;
+      const kb = post.size ? ` (${post.size > 1048576 ? (post.size / 1048576).toFixed(1) + ' MB' : Math.round(post.size / 1024) + ' KB'})` : '';
+      let out = `*📢 CFORWARD SUMMARY*\nSession: +${hub.accountOf(sock)}\nSource: ${sourceLabel}\nType: ${post.type.replace('Message', '')}${kb}${post.caption ? ' + caption' : ''}\nStyle: ${fwd ? (fwd.jid ? 'forwarded from channel' : 'forwarded') : 'normal post'}\n\n✅ *Sent: ${res.sent.length}*`;
+      if (res.sent.length) out += `\n${list(res.sent, (r) => `${r._delivery === 'confirmed' ? '✅' : r._delivery === 'not-seen' ? '⚠️' : '📤'} ${name(r)}${r._delivery === 'confirmed' ? (r._serverId ? ` — accepted by WhatsApp (post #${r._serverId})` : ' — confirmed in channel') : r._delivery === 'not-seen' ? ' — handed over, but NOT visible in the channel feed (maybe rejected: are you admin there?)' : ' — handed over (WhatsApp sent no confirmation)'}${r._note && r._note !== 'forwarded label' ? `\n   ↳ ${r._note}` : ''}`)}`;
       if (res.skipped.length) out += `\n\n⏭️ *Skipped (duplicate): ${res.skipped.length}*\n${list(res.skipped, (s) => `• ${name(s.rec)}`)}\n_Use ${config.prefix}cforward --force to resend._`;
       if (res.failed.length) out += `\n\n❌ *Failed: ${res.failed.length}*\n${list(res.failed, (f) => `• ${name(f.rec)} — ${f.reason}`)}`;
       if (rejected.length) out += `\n\n⚠️ *Not usable (${rejected.length}):*\n${list(rejected, (r) => `• ${name(r.rec)} — ${r.reason}`)}`;
