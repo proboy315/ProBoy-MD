@@ -235,6 +235,8 @@ function describeContent(message) {
   else if (MEDIA_TYPES.includes(type)) {
     out.caption = mc?.caption || null; out.mime = mc?.mimetype || null; out.fileName = mc?.fileName || null;
     out.ptt = !!mc?.ptt; out.gif = !!mc?.gifPlayback; out.size = sizeOf(mc);
+    out.width = toInt(mc?.width); out.height = toInt(mc?.height); out.seconds = toInt(mc?.seconds);
+    out.thumb = mc?.jpegThumbnail && mc.jpegThumbnail.length ? Buffer.from(mc.jpegThumbnail) : null; // transient: never persisted
   } else return { ...out, unsupported: true };
   if (!out.text && !out.caption && !MEDIA_TYPES.includes(type)) return null;
   return out;
@@ -314,7 +316,7 @@ async function cachePost(sock, jid, serverId, message, ts, { withMedia = true, m
   if (!d || d.unsupported) return null;
   const posts = (state.posts[jid] = state.posts[jid] || {});
   if (posts[serverId]) return posts[serverId];
-  const rec = { serverId, msgId, jid, ts: Number(ts) || Math.floor(Date.now() / 1000), savedAt: Date.now(), type: d.type, text: d.text, caption: d.caption, mime: d.mime, fileName: d.fileName, ptt: d.ptt, gif: d.gif, size: d.size, media: null, miss: 0 };
+  const rec = { serverId, msgId, jid, ts: Number(ts) || Math.floor(Date.now() / 1000), savedAt: Date.now(), type: d.type, text: d.text, caption: d.caption, mime: d.mime, fileName: d.fileName, ptt: d.ptt, gif: d.gif, size: d.size, width: d.width, height: d.height, seconds: d.seconds, media: null, miss: 0 };
   posts[serverId] = rec;
   markDirty();
   if (withMedia && MEDIA_TYPES.includes(d.type)) {
@@ -468,7 +470,7 @@ function liveSockFor(account) {
 
 let pollTimer = null, polling = false, lastPoll = { at: 0, channels: 0, newPosts: 0, deletions: 0 };
 function ensurePoller(sock) {
-  if (sock) registerSock(sock);
+  if (sock) { registerSock(sock); scheduleAutoSync(sock); }
   if (pollTimer) return;
   const S = cfg();
   pollTimer = setInterval(() => { pollOnce().catch(() => {}); }, S.pollMs);
@@ -619,6 +621,137 @@ async function reportChannelDelete(sock, { jid, serverId, msgId = null, via = 'e
 // Sending to channels
 // ---------------------------------------------------------------------------
 /** record-like {type,text,caption,mime,fileName,ptt,gif} + local file -> Baileys content (or null) */
+// ---------------------------------------------------------------------------
+// Posting to a channel (own implementation of the newsletter send path)
+// ---------------------------------------------------------------------------
+// Why not sock.sendMessage()?  Baileys 7.0.0-rc14 sends newsletter MEDIA wrongly:
+//   1. it uploads to /mms/<type>/...            (WhatsApp expects /newsletter/newsletter-<type>/...)
+//   2. its <plaintext> node has no mediatype attr (WhatsApp rejects the media silently)
+// Text works, media does not - exactly what was reported. Both points are what the whatsmeow project does
+// and what Baileys forks changed ("fix media being rejected when sending to newsletter").
+// Here we upload + send the stanza ourselves and wait for WhatsApp's ack, so we also learn the real result.
+const NL_UPLOAD_PATH = { image: '/newsletter/newsletter-image', video: '/newsletter/newsletter-video', audio: '/newsletter/newsletter-audio', document: '/newsletter/newsletter-document', sticker: '/newsletter/newsletter-image' };
+const KIND_OF = { imageMessage: 'image', videoMessage: 'video', audioMessage: 'audio', documentMessage: 'document', stickerMessage: 'sticker' };
+const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const prune = (o) => { for (const k of Object.keys(o)) if (o[k] === undefined || o[k] === null) delete o[k]; return o; };
+
+/** Upload a local file (unencrypted) to the newsletter media endpoint. Returns {url,directPath,handle,thumb*,fileSha256,fileLength}. */
+async function uploadNewsletterMedia(sock, file, kind) {
+  if (!NL_UPLOAD_PATH[kind]) throw new Error(`no newsletter upload path for ${kind}`);
+  if (typeof sock?.refreshMediaConn !== 'function') throw new Error('this socket cannot refresh the media connection');
+  const size = fs.statSync(file).size;
+  if (size > cfg().maxMediaBytes) throw new Error(`file too large (${Math.round(size / MB)} MB)`);
+  if (!memoryGuard.canAllocate(size * 2 + MB)) throw new Error('not enough free memory to upload this file right now');
+  const data = fs.readFileSync(file);
+  const fileSha256 = crypto.createHash('sha256').update(data).digest();
+  const token = b64url(fileSha256);
+  let conn = await sock.refreshMediaConn(false);
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    for (const h of (conn?.hosts || [])) {
+      const url = `https://${h.hostname}${NL_UPLOAD_PATH[kind]}/${token}?auth=${encodeURIComponent(conn.auth)}&token=${token}&server_thumb_gen=1`;
+      try {
+        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', Origin: 'https://web.whatsapp.com' }, body: data, signal: AbortSignal.timeout(120000) });
+        const j = await res.json().catch(() => null);
+        if (res.ok && j && (j.url || j.direct_path)) {
+          return {
+            url: j.url, directPath: j.direct_path, handle: j.handle || null,
+            thumbnailDirectPath: j.thumbnail_info?.thumbnail_direct_path || null,
+            thumbnailSha256: j.thumbnail_info?.thumbnail_sha256 ? Buffer.from(j.thumbnail_info.thumbnail_sha256, 'base64') : null,
+            fileSha256, fileLength: data.length
+          };
+        }
+        lastErr = new Error(`upload to ${h.hostname} failed: HTTP ${res.status} ${JSON.stringify(j || {}).slice(0, 120)}`);
+      } catch (e) { lastErr = e; }
+    }
+    conn = await sock.refreshMediaConn(true);
+  }
+  throw lastErr || new Error('media upload failed');
+}
+
+/** Message (plain object for proto.Message.fromObject) for one channel post. `fwd` = {jid?, serverId?, name?} adds the Forwarded label. */
+function buildNewsletterMessage(p, up, fwd) {
+  const ctx = fwd ? prune({
+    isForwarded: true, forwardingScore: 1,
+    forwardedNewsletterMessageInfo: fwd.jid ? prune({ newsletterJid: fwd.jid, serverMessageId: Number(fwd.serverId) || undefined, newsletterName: fwd.name || undefined, contentType: 'UPDATE' }) : undefined
+  }) : undefined;
+  const base = (extra) => prune({ url: up.url, directPath: up.directPath, fileSha256: up.fileSha256, fileLength: up.fileLength, contextInfo: ctx, ...extra });
+  switch (p.type) {
+    case 'conversation': case 'extendedTextMessage': {
+      const text = p.text || '';
+      return ctx ? { extendedTextMessage: { text, contextInfo: ctx } } : { conversation: text };
+    }
+    case 'imageMessage': return { imageMessage: base({ mimetype: p.mime || 'image/jpeg', caption: p.caption || undefined, width: p.width || undefined, height: p.height || undefined, jpegThumbnail: p.thumb || undefined, thumbnailDirectPath: up.thumbnailDirectPath, thumbnailSha256: up.thumbnailSha256 }) };
+    case 'videoMessage': return { videoMessage: base({ mimetype: p.mime || 'video/mp4', caption: p.caption || undefined, gifPlayback: p.gif || undefined, seconds: p.seconds || undefined, width: p.width || undefined, height: p.height || undefined, jpegThumbnail: p.thumb || undefined, thumbnailDirectPath: up.thumbnailDirectPath, thumbnailSha256: up.thumbnailSha256 }) };
+    case 'audioMessage': return { audioMessage: base({ mimetype: p.mime || 'audio/mpeg', ptt: p.ptt || undefined, seconds: p.seconds || undefined }) };
+    case 'documentMessage': return { documentMessage: base({ mimetype: p.mime || 'application/octet-stream', fileName: p.fileName || 'file', title: p.fileName || undefined, caption: p.caption || undefined }) };
+    case 'stickerMessage': return { stickerMessage: base({ mimetype: p.mime || 'image/webp', width: p.width || undefined, height: p.height || undefined, stickerSentTs: Date.now() }) };
+    default: return null;
+  }
+}
+const mediaTypeAttr = (p) => (p.type === 'videoMessage' ? (p.gif ? 'gif' : 'video') : p.type === 'audioMessage' ? (p.ptt ? 'ptt' : 'audio') : KIND_OF[p.type] || null);
+
+const findAttr = (node, name, depth = 0) => {
+  if (!node || typeof node !== 'object' || depth > 4) return null;
+  if (node.attrs && node.attrs[name] != null) return node.attrs[name];
+  if (Array.isArray(node.content)) for (const c of node.content) { const v = findAttr(c, name, depth + 1); if (v != null) return v; }
+  return null;
+};
+
+/** Send one built message as a newsletter stanza and wait for WhatsApp's ack. -> {ok, serverId, error, timeout, code} */
+async function sendNewsletterRaw(sock, jid, message, { mediatype = null, handle = null, timeoutMs = 60000 } = {}) {
+  const { proto } = baileys();
+  const bytes = proto.Message.encode(proto.Message.fromObject(message)).finish();
+  const id = '3EB0' + crypto.randomBytes(18).toString('hex').toUpperCase();
+  const stanza = {
+    tag: 'message',
+    attrs: { to: jid, id, type: mediatype ? 'media' : 'text', ...(handle ? { media_id: handle } : {}) },
+    content: [{ tag: 'plaintext', attrs: mediatype ? { mediatype } : {}, content: bytes }]
+  };
+  let ack;
+  try { ack = await sock.query(stanza, timeoutMs); }
+  catch (e) {
+    const m = String(e?.message || e);
+    if (/timed? ?out/i.test(m)) return { ok: true, timeout: true, serverId: null, id }; // handed over, no ack seen
+    return { ok: false, error: m.slice(0, 140), id };
+  }
+  const code = ack?.attrs?.error;
+  if (code) return { ok: false, code: String(code), error: `WhatsApp refused the post (error ${code}${String(code) === '403' || String(code) === '479' ? ' - is this account really admin/owner of that channel?' : ''})`, id };
+  const sid = findAttr(ack, 'server_id');
+  return { ok: true, serverId: sid != null ? String(sid) : null, id };
+}
+
+/**
+ * Post `post` (+ local `file` for media) to one channel. Optional forward label via `fwd`.
+ * If WhatsApp refuses the forward label the post is retried plain. -> { ok, serverId, delivery, note, error }
+ */
+async function postToChannel(sock, jid, post, file, { fwd = null } = {}) {
+  const isMedia = !!KIND_OF[post.type];
+  if (isMedia && !file) return { ok: false, error: 'no media file available' };
+  if (typeof sock?.query !== 'function') {
+    // very old/odd socket: only plain text can be sent the old way
+    if (isMedia) return { ok: false, error: 'this socket cannot send channel media' };
+    try { await sock.sendMessage(jid, { text: post.text || '' }); return { ok: true, serverId: null, delivery: 'unconfirmed' }; } catch (e) { return { ok: false, error: String(e?.message || e).slice(0, 120) }; }
+  }
+  let up = null;
+  try {
+    if (isMedia) up = await uploadNewsletterMedia(sock, file, KIND_OF[post.type]);
+  } catch (e) { return { ok: false, error: `upload failed: ${String(e?.message || e).slice(0, 110)}` }; }
+  const attempt = async (f) => {
+    const msg = buildNewsletterMessage(post, up || {}, f);
+    if (!msg) return { ok: false, error: `unsupported message type (${post.type})` };
+    return sendNewsletterRaw(sock, jid, msg, { mediatype: isMedia ? mediaTypeAttr(post) : null, handle: up?.handle || null });
+  };
+  let r = await attempt(fwd);
+  let note = null;
+  if (!r.ok && fwd && r.code) { // refused: maybe because of the forward label -> plain retry
+    const r2 = await attempt(null);
+    if (r2.ok) { r = r2; note = 'posted WITHOUT the forwarded label (WhatsApp refused it)'; }
+  }
+  if (!r.ok) return { ok: false, error: r.error };
+  return { ok: true, serverId: r.serverId, delivery: r.serverId ? 'confirmed' : 'unconfirmed', note: note || (fwd ? 'forwarded label' : null) };
+}
+
 function buildSendContent(p, file, captionOverride) {
   const caption = captionOverride !== undefined ? captionOverride : (p.caption || undefined);
   switch (p.type) {
@@ -738,15 +871,87 @@ async function syncMyChannels(sock, { force = false } = {}) {
   return result;
 }
 
+/** Saved owner/admin channels of one account -> { syncedAtMs, recs:[registry records] } or null. */
+function savedAdminFor(account) {
+  const e = readAdminFile().accounts?.[account];
+  if (!e || !Array.isArray(e.channels)) return null;
+  const syncedAtMs = Date.parse(e.syncedAt) || 0;
+  const recs = [];
+  for (const c of e.channels) {
+    const rec = ensureChannel(c.jid, 'subscribed');
+    if (!rec) continue;
+    rec.name = rec.name || c.name || null;
+    if (!rec.invite && c.link) rec.invite = String(c.link).split('/channel/')[1] || null;
+    if (!rec.accounts[account] || !ADMIN_ROLES.has(rec.accounts[account].role)) rec.accounts[account] = { role: c.role, verifiedAt: syncedAtMs, error: null };
+    recs.push(rec);
+  }
+  return { syncedAtMs, recs };
+}
+
+/** Everything saved: [{account, syncedAt, channels:[{jid,name,role,link,followers}]}] */
+function savedAccounts() {
+  const o = readAdminFile().accounts || {};
+  return Object.entries(o).map(([account, e]) => ({ account, syncedAt: e.syncedAt, count: e.count ?? (e.channels || []).length, channels: e.channels || [] }));
+}
+
+/** Refresh the saved list for every connected session, one after the other. */
+async function syncAllSessions({ force = true, delayMs = 500, max = 80, onProgress } = {}) {
+  const socksNow = (() => { try { return globalThis.ProBoySessionManager?.getActiveSocks?.() || []; } catch { return []; } })();
+  const out = { total: socksNow.length, ok: 0, failed: [], rows: [] };
+  const seen = new Set();
+  for (const s of socksNow.slice(0, max)) {
+    const acct = accountOf(s);
+    if (!acct || seen.has(acct) || !isOpen(s)) continue;
+    seen.add(acct);
+    if (memoryGuard.level() === 'critical') { out.failed.push({ account: acct, error: 'skipped: server memory is critical' }); continue; }
+    const r = await syncMyChannels(s, { force });
+    if (r.ok) { out.ok++; out.rows.push({ account: acct, followed: r.total, admin: r.admin.length }); }
+    else out.failed.push({ account: acct, error: r.error });
+    if (onProgress) { try { onProgress(out); } catch { /* ignore */ } }
+    await sleep(delayMs);
+  }
+  return out;
+}
+
+const autoSyncDone = new Set();
+/** Once per account per process (and only if the saved list is older than 6 h): save which channels this session administers. */
+function scheduleAutoSync(sock) {
+  try {
+    if (process.env.CHANNEL_AUTOSYNC === '0') return;
+    const acct = accountOf(sock);
+    if (!acct || autoSyncDone.has(acct)) return;
+    autoSyncDone.add(acct);
+    const saved = readAdminFile().accounts?.[acct];
+    if (saved && Date.now() - (Date.parse(saved.syncedAt) || 0) < 6 * 3600 * 1000) return;
+    const t = setTimeout(async () => {
+      try {
+        const s = liveSockFor(acct) || sock;
+        if (!isOpen(s) || memoryGuard.level() === 'critical') { autoSyncDone.delete(acct); return; }
+        await syncMyChannels(s, { force: true });
+      } catch { /* never throw from a timer */ }
+    }, 45000 + Math.floor(Math.random() * 90000)); // spread 40+ sessions over ~2 minutes
+    if (t.unref) t.unref();
+  } catch { /* ignore */ }
+}
+
 /**
  * Eligible destinations for this session's account: channels where role is OWNER/ADMIN
  * (freshly verified). Returns { eligible:[rec], rejected:[{rec,reason}] }.
  */
-async function eligibleDestinations(sock, { excludeJid = null } = {}) {
+async function eligibleDestinations(sock, { excludeJid = null, forceLive = false } = {}) {
   load();
-  // preferred: the live list from WhatsApp itself (roles included)
-  const live = await syncMyChannels(sock);
-  if (live.ok) return { eligible: live.admin.filter((r) => r.jid !== excludeJid), rejected: [], source: 'live' };
+  const acct = accountOf(sock);
+  // 1) the saved list for THIS session (database/my_admin_channels.json), if it is recent enough
+  const saved = savedAdminFor(acct);
+  const ttl = envNum('CHANNEL_ADMIN_DB_TTL_MS', 60 * 60 * 1000);
+  if (saved && !forceLive && Date.now() - saved.syncedAtMs < ttl) {
+    return { eligible: saved.recs.filter((r) => r.jid !== excludeJid), rejected: [], source: 'saved', syncedAt: saved.syncedAtMs, account: acct };
+  }
+  // 2) otherwise ask WhatsApp (and re-save the list)
+  const live = await syncMyChannels(sock, { force: true });
+  if (live.ok) return { eligible: live.admin.filter((r) => r.jid !== excludeJid), rejected: [], source: 'live', syncedAt: Date.now(), account: acct };
+  // 3) WhatsApp not reachable / query failed: a stale saved list is still better than nothing
+  if (saved) return { eligible: saved.recs.filter((r) => r.jid !== excludeJid), rejected: [], source: 'saved-stale', syncedAt: saved.syncedAtMs, account: acct, liveError: live.error };
   try { for (const e of require('./channelManager').getNewsletters()) ensureChannel(e.id, 'managed'); } catch { /* optional */ }
   const eligible = [], rejected = [];
   const S = cfg();
@@ -764,7 +969,7 @@ async function eligibleDestinations(sock, { excludeJid = null } = {}) {
  * Send one post to many channels. `post` = {type,text,caption,mime,fileName,ptt,gif,size}, `file` = local media path or null.
  * Per-channel errors never abort the run. Returns { sent[], skipped[], failed[] , hash }.
  */
-async function forwardToChannels(sock, post, file, dests, { force = false, delayMs = 1500, onProgress, confirm = true } = {}) {
+async function forwardToChannels(sock, post, file, dests, { force = false, delayMs = 1500, onProgress, confirm = true, fwd = null } = {}) {
   load();
   const hash = fingerprint(post, file);
   const result = { hash, sent: [], skipped: [], failed: [] };
@@ -774,21 +979,22 @@ async function forwardToChannels(sock, post, file, dests, { force = false, delay
     const history = (state.forwarded[hash] = state.forwarded[hash] || { at: Date.now(), sent: [] });
     for (const rec of dests) {
       if (!force && history.sent.includes(rec.jid)) { result.skipped.push({ rec, reason: 'already sent earlier (use --force to resend)' }); continue; }
-      const content = buildSendContent(post, file);
-      if (!content) { result.failed.push({ rec, reason: `unsupported message type (${post.type})` }); continue; }
+      if (!KIND_OF[post.type] && post.type !== 'conversation' && post.type !== 'extendedTextMessage') { result.failed.push({ rec, reason: `unsupported message type (${post.type})` }); continue; }
       if (!isOpen(sock)) { result.failed.push({ rec, reason: 'bot connection is down' }); continue; }
       try {
-        const before = confirm ? await newestServerId(sock, rec.jid) : null;
-        await withTimeout(sock.sendMessage(rec.jid, content), 120000, 'send');
-        history.sent.push(rec.jid); history.at = Date.now(); markDirty();
-        result.sent.push(rec);
-        // sendMessage() only proves the message was handed to WhatsApp (rejections such as "not an admin" arrive
-        // later and are not reported by Baileys). Best effort: look at the channel feed to see whether it appeared.
-        rec._delivery = 'unconfirmed';
-        if (confirm) {
-          await sleep(2500);
-          const after = await newestServerId(sock, rec.jid);
-          if (before != null && after != null) rec._delivery = after > before ? 'confirmed' : 'not-seen';
+        const r = await withTimeout(postToChannel(sock, rec.jid, post, file, { fwd }), 240000, 'send');
+        if (!r.ok) { result.failed.push({ rec, reason: r.error || 'failed' }); }
+        else {
+          history.sent.push(rec.jid); history.at = Date.now(); markDirty();
+          const item = { ...rec, _delivery: r.delivery, _note: r.note || null, _serverId: r.serverId || null };
+          // no ack info: best effort, look at the channel feed to see whether the post appeared
+          if (r.delivery === 'unconfirmed' && confirm) {
+            const before = await newestServerId(sock, rec.jid);
+            await sleep(2500);
+            const after = await newestServerId(sock, rec.jid);
+            if (before != null && after != null) item._delivery = after > before ? 'confirmed' : 'not-seen';
+          }
+          result.sent.push(item);
         }
       } catch (e) {
         result.failed.push({ rec, reason: String(e?.message || e).slice(0, 120) });
@@ -826,9 +1032,9 @@ module.exports = {
   // delete log
   reportChannelDelete, resolveLogJid,
   // forwarding
-  eligibleDestinations, forwardToChannels, targetRecord,
+  eligibleDestinations, forwardToChannels, targetRecord, postToChannel, uploadNewsletterMedia, buildNewsletterMessage, sendNewsletterRaw,
   // live list from WhatsApp + separate owner/admin file
-  fetchSubscribed, syncMyChannels, readAdminFile, ADMIN_FILE, isOpen,
+  fetchSubscribed, syncMyChannels, syncAllSessions, savedAdminFor, savedAccounts, scheduleAutoSync, readAdminFile, ADMIN_FILE, isOpen,
   // misc
   status, flush, pruneAll, _state: () => state, _reset: () => { loaded = false; state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [] }; }
 };
