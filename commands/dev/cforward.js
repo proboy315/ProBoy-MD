@@ -22,11 +22,6 @@ const hub = require('../../utils/channelHub');
 
 const MAX_SHOWN = 15;
 const name = (rec) => rec.name || rec.jid;
-const digits = (v) => String(v || '').split('@')[0].split(':')[0].replace(/\D/g, '');
-
-// The ONE number allowed to run the all-sessions mode (-a -s). Default: the first configured owner number.
-const allSessionsNumber = () => digits(process.env.CFORWARD_ALL_NUMBER || config.channelSettings?.allSessionsNumber || (Array.isArray(config.ownerNumber) ? config.ownerNumber[0] : config.ownerNumber));
-const senderDigits = (extra) => digits(extra.utils?.normalizeJidWithLid ? extra.utils.normalizeJidWithLid(extra.sender) : extra.sender);
 
 let job = null; // the running all-sessions forward (only one at a time)
 const fmtMin = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? '<1 min' : `~${m} min`; };
@@ -62,8 +57,7 @@ module.exports = {
 
       // ---- all-sessions mode: restricted to the main owner number ----
       if (allSessions) {
-        const allowed = allSessionsNumber();
-        if (!extra.isOwner || !allowed || senderDigits(extra) !== allowed) {
+        if (!hub.isAllSessionsUser(extra)) {
           return reply('⛔ *Restricted*\nThe all-sessions mode (-a -s) can only be used by the main owner number.\nNormal .cforward (this session\'s own channels) still works for you.');
         }
         if (job) return reply(`⏳ An all-sessions forward is already running (${job.done}/${job.total}). Wait for it, or send ${config.prefix}cforward stop`);

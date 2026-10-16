@@ -39,7 +39,7 @@ module.exports = {
   aliases: ['mychannels', 'chlist'],
   category: 'dev',
   description: 'List WhatsApp Channels you own/admin (verified with WhatsApp) and manage the channel list',
-  usage: `${config.prefix}channels [all | sync | syncall | sessions | export | add <jid|link> | remove <jid> | refresh | log | logdest <bot|jid|default> | status]`,
+  usage: `${config.prefix}channels [-a -s [sync|links] | all | sync | syncall | sessions | export | add <jid|link> | remove <jid> | refresh | log | logdest <bot|jid|default> | status]`,
   ownerOnly: true,
 
   // called once per connected session by handler.initializePlugins(): starts the deletion watcher
@@ -48,6 +48,9 @@ module.exports = {
   async execute(sock, msg, args, extra) {
     const { reply, react } = extra;
     if (!extra.isOwner && !extra.isSudo) return reply('🔒 Owner only.');
+    const low = args.map((a) => String(a).toLowerCase());
+    const allSessions = low.includes('--all-sessions') || low.includes('-as') || low.includes('-sa') || (low.includes('-a') && low.includes('-s'));
+    if (allSessions) args = args.filter((a) => !String(a).startsWith('-')); // keep the words (sync/links/ids...), drop the flags
     const sub = (args[0] || '').toLowerCase();
     try {
       hub.registerSock(sock);
@@ -93,6 +96,33 @@ module.exports = {
       if (sub === 'status') {
         const st = hub.status();
         return reply(`*📡 Channel system*\nTracked channels: ${st.channels} (admin/owner: ${st.admin})\nCached posts: ${st.cachedPosts}\nDeletion watcher: ${st.polling ? `on (every ${Math.round(st.pollMs / 60000)} min)` : 'off'}\nLast check: ${st.lastPoll.at ? new Date(st.lastPoll.at).toISOString().replace('T', ' ').slice(0, 19) + ' UTC' : 'never'} (${st.lastPoll.channels} channels, ${st.lastPoll.newPosts} new posts, ${st.lastPoll.deletions} deletions)`);
+      }
+
+      // ---- ALL SESSIONS overview: every connected session's owner/admin channels + followers (main owner number only) ----
+      if (allSessions) {
+        if (!hub.isAllSessionsUser(extra)) return reply('⛔ *Restricted*\nThe all-sessions view (-a -s) can only be used by the main owner number.');
+        await react('⏳');
+        await reply('🔄 Collecting channels + followers from every connected session (one by one, please wait)...');
+        const force = args.some((a) => ['sync', 'refresh'].includes(String(a).toLowerCase()));
+        const showLinks = args.some((a) => String(a).toLowerCase() === 'links');
+        const data = await hub.collectAllSessions(sock, { force });
+        if (!data.rows.length) { await react('❌'); return reply(`❌ No session could be read.${data.problems.length ? '\n' + data.problems.slice(0, 8).map((p) => `• +${p.account}: ${p.error}`).join('\n') : ''}`); }
+        const n = (v) => (v == null ? '?' : Number(v).toLocaleString('en-US'));
+        const lines = [`*📡 ALL SESSIONS — owner/admin channels*`, `Sessions: ${data.rows.length} • Channels (unique): ${data.unique} • 👥 Total followers: ${n(data.totalFollowers)}${data.noCount ? ` (+${data.noCount} channel(s) without a count)` : ''}`, `💾 Saved: database/my_admin_channels.json`, ''];
+        for (const r of data.rows) {
+          lines.push(`📱 *+${r.account}* — follows ${r.followed} • 👑 ${r.owners} owner • 🛡️ ${r.admins} admin`);
+          if (!r.channels.length) lines.push('   (no owner/admin channel)');
+          r.channels.forEach((c, i) => {
+            lines.push(`${i + 1}. ${c.role === 'OWNER' ? '👑' : '🛡️'} *${c.name || 'Unnamed'}* — 👥 ${n(c.followers)}`);
+            lines.push(`   🆔 \`${c.jid}\``);
+            if (showLinks && c.link) lines.push(`   🔗 ${c.link}`);
+          });
+          lines.push('');
+        }
+        if (data.problems.length) lines.push(`⚠️ *Not read (${data.problems.length}):*`, ...data.problems.slice(0, 10).map((p) => `• +${p.account}: ${p.error}`));
+        for (const p of chunkText(lines)) await reply(p);
+        await react('✅');
+        return;
       }
 
       if (sub === 'sessions') {
@@ -143,9 +173,11 @@ module.exports = {
       // 1) preferred: live list from WhatsApp itself
       const live = await hub.syncMyChannels(sock, { force });
       if (live.ok) {
+        await hub.fillFollowers(sock, live.admin); // follower counts the list did not carry (paced, cached 30 min)
         const rows = (showAll ? live.all : live.admin).slice();
         const owners = live.admin.filter((r) => hub.roleFor(r, sock) === 'OWNER').length;
-        const head = `📡 Live from WhatsApp: ${live.total} channel(s) followed • 👑 ${owners} owner • 🛡️ ${live.admin.length - owners} admin${live.noRole ? ` • ❔ ${live.noRole} role unknown` : ''}\n💾 Owner/admin list saved: database/my_admin_channels.json ${live.saved ? '✅' : '⚠️ (write failed)'}  — send it with ${config.prefix}channels export`;
+        const tf = live.admin.reduce((a, r) => a + (Number(r.subscribers) || 0), 0);
+        const head = `📡 Live from WhatsApp: ${live.total} channel(s) followed • 👑 ${owners} owner • 🛡️ ${live.admin.length - owners} admin • 👥 ${tf.toLocaleString('en-US')} followers in your channels${live.noRole ? ` • ❔ ${live.noRole} role unknown` : ''}\n💾 Owner/admin list saved: database/my_admin_channels.json ${live.saved ? '✅' : '⚠️ (write failed)'}  — send it with ${config.prefix}channels export`;
         if (!rows.length) { await react('❌'); return reply(`${head}\n\n📭 No channel where this account is owner/admin.\nUse ${config.prefix}channels all to see every followed channel.`); }
         rows.sort((a, b) => (hub.isAdminFor(b, sock) - hub.isAdminFor(a, sock)) || String(a.name).localeCompare(String(b.name)));
         const blocks = rows.map((r, i) => describe(r, sock, i + 1));
