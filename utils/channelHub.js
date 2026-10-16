@@ -860,7 +860,7 @@ async function syncMyChannels(sock, { force = false } = {}) {
     rec.name = m.name || rec.name;
     rec.invite = m.invite || rec.invite;
     rec.description = m.description ?? rec.description;
-    rec.subscribers = m.subscribers ?? rec.subscribers;
+    if (m.subscribers != null) { rec.subscribers = m.subscribers; rec.followersAt = now; }
     rec.verification = m.verification ?? rec.verification;
     rec.creationTime = m.creationTime ?? rec.creationTime;
     if (m.role) rec.accounts[acct] = { role: m.role, verifiedAt: now, error: null };
@@ -875,6 +875,66 @@ async function syncMyChannels(sock, { force = false } = {}) {
   const result = { ok: true, source: 'live', total: recs.length, all: recs, admin, saved, noRole: noRole.length, file: ADMIN_FILE };
   syncCache.set(acct, { at: now, result });
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Follower counts + all-sessions overview
+// ---------------------------------------------------------------------------
+// who may use the "-a -s" (all sessions) modes: ONE number. Default = first configured owner number.
+const digitsOf = (v) => String(v || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+const allSessionsNumber = () => digitsOf(process.env.CFORWARD_ALL_NUMBER || config.channelSettings?.allSessionsNumber || (Array.isArray(config.ownerNumber) ? config.ownerNumber[0] : config.ownerNumber));
+function isAllSessionsUser(extra) {
+  const allowed = allSessionsNumber();
+  const sender = digitsOf(extra?.utils?.normalizeJidWithLid ? extra.utils.normalizeJidWithLid(extra.sender) : extra?.sender);
+  return !!(extra?.isOwner && allowed && sender === allowed);
+}
+
+/**
+ * Fill in follower counts the subscribed-channels list did not carry (newsletterMetadata per channel, paced).
+ * `recs` must be this account's COMPLETE owner/admin list (it is saved back to my_admin_channels.json when counts changed).
+ * Counts younger than maxAgeMs are not asked again (a channel shared by several sessions is asked once). -> number updated
+ */
+async function fillFollowers(sock, recs, { maxAgeMs = 30 * 60 * 1000, max = 60, delayMs = 350 } = {}) {
+  load();
+  let n = 0;
+  for (const rec of recs.slice(0, max)) {
+    if (rec.subscribers != null && rec.followersAt && Date.now() - rec.followersAt < maxAgeMs) continue;
+    try {
+      const meta = parseMeta(await sock.newsletterMetadata('jid', rec.jid));
+      if (meta && meta.subscribers != null) { rec.subscribers = meta.subscribers; rec.followersAt = Date.now(); n++; }
+    } catch { /* keep whatever we had */ }
+    await sleep(delayMs);
+  }
+  if (n) { markDirty(); try { writeAdminFile(accountOf(sock), recs.filter((r) => ADMIN_ROLES.has(r.accounts?.[accountOf(sock)]?.role))); } catch { /* ignore */ } }
+  return n;
+}
+
+/**
+ * Owner/admin channels of EVERY connected session, with roles and follower counts.
+ * -> { rows:[{account, followed, owners, admins, channels:[{jid,name,role,followers,link}]}], problems:[{account,error}], unique, totalFollowers }
+ */
+async function collectAllSessions(origSock, { force = false, max = 80, delayMs = 400, onProgress } = {}) {
+  const list = [], seen = new Set();
+  const add = (s) => { const a = accountOf(s); if (a && !seen.has(a) && isOpen(s)) { seen.add(a); list.push(s); } };
+  if (origSock) add(origSock);
+  try { for (const s of globalThis.ProBoySessionManager?.getActiveSocks?.() || []) add(s); } catch { /* ignore */ }
+  const rows = [], problems = [], uniq = new Map();
+  for (const s of list.slice(0, max)) {
+    const a = accountOf(s);
+    if (memoryGuard.level() === 'critical') { problems.push({ account: a, error: 'skipped: server memory is critical' }); continue; }
+    const r = await syncMyChannels(s, { force });
+    if (!r.ok) { problems.push({ account: a, error: r.error }); continue; }
+    await fillFollowers(s, r.admin);
+    const channels = r.admin.map((rec) => ({ jid: rec.jid, name: rec.name || null, role: rec.accounts?.[a]?.role || null, followers: rec.subscribers ?? null, link: channelLink(rec) }))
+      .sort((x, y) => (y.followers ?? -1) - (x.followers ?? -1));
+    for (const c of channels) if (!uniq.has(c.jid)) uniq.set(c.jid, c.followers);
+    rows.push({ account: a, followed: r.total, owners: channels.filter((c) => c.role === 'OWNER').length, admins: channels.filter((c) => c.role === 'ADMIN').length, channels });
+    if (onProgress) { try { onProgress(rows.length, list.length); } catch { /* ignore */ } }
+    await sleep(delayMs);
+  }
+  rows.sort((x, y) => y.channels.length - x.channels.length);
+  let totalFollowers = 0; for (const v of uniq.values()) totalFollowers += Number(v) || 0;
+  return { rows, problems, unique: uniq.size, totalFollowers, noCount: [...uniq.values()].filter((v) => v == null).length };
 }
 
 /** Saved owner/admin channels of one account -> { syncedAtMs, recs:[registry records] } or null. */
@@ -1116,7 +1176,7 @@ module.exports = {
   // forwarding
   eligibleDestinations, forwardToChannels, planAllSessions, randDelay, capLeft, targetRecord, postToChannel, uploadNewsletterMedia, buildNewsletterMessage, sendNewsletterRaw,
   // live list from WhatsApp + separate owner/admin file
-  fetchSubscribed, syncMyChannels, syncAllSessions, savedAdminFor, savedAccounts, scheduleAutoSync, readAdminFile, ADMIN_FILE, isOpen,
+  fetchSubscribed, syncMyChannels, syncAllSessions, collectAllSessions, fillFollowers, isAllSessionsUser, allSessionsNumber, savedAdminFor, savedAccounts, scheduleAutoSync, readAdminFile, ADMIN_FILE, isOpen,
   // misc
   status, flush, pruneAll, _state: () => state, _reset: () => { loaded = false; state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [], fwdCount: {} }; }
 };
