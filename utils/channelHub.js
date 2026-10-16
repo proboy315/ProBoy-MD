@@ -51,7 +51,13 @@ const cfg = () => ({
   maxMediaBytes: envNum('CHANNEL_MAX_MEDIA_BYTES', 15 * MB),
   maxMediaTotal: envNum('CHANNEL_MAX_MEDIA_TOTAL_BYTES', 100 * MB),
   verifyTtlMs: envNum('CHANNEL_VERIFY_TTL_MS', 6 * 3600 * 1000),
-  logDeletes: config.channelSettings?.logDeletes !== false
+  logDeletes: config.channelSettings?.logDeletes !== false,
+  // posting pace / account safety (see forwardToChannels)
+  fwdDelayMin: envNum('CFORWARD_DELAY_MIN_MS', 4000),
+  fwdDelayMax: envNum('CFORWARD_DELAY_MAX_MS', 8000),
+  sessionGapMin: envNum('CFORWARD_SESSION_GAP_MIN_MS', 2000),
+  sessionGapMax: envNum('CFORWARD_SESSION_GAP_MAX_MS', 5000),
+  dailyCap: envNum('CFORWARD_DAILY_CAP', 100)
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -66,7 +72,7 @@ const txt = (v) => (v && typeof v === 'object' ? v.text : v) || null;
 // ---------------------------------------------------------------------------
 // Persistent state (atomic, debounced)
 // ---------------------------------------------------------------------------
-let state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [] };
+let state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [], fwdCount: {} };
 let dirty = false, saveTimer = null, loaded = false;
 
 function load() {
@@ -83,7 +89,7 @@ function load() {
     try { fs.renameSync(STORE_FILE, `${STORE_FILE}.corrupt-${Date.now()}`); } catch { /* ignore */ }
     console.error('[channelHub] store unreadable, starting fresh:', e.message);
   }
-  for (const k of ['channels', 'posts', 'deleted', 'forwarded']) if (!state[k] || typeof state[k] !== 'object') state[k] = {};
+  for (const k of ['channels', 'posts', 'deleted', 'forwarded', 'fwdCount']) if (!state[k] || typeof state[k] !== 'object') state[k] = {};
   if (!Array.isArray(state.deleteLog)) state.deleteLog = [];
 }
 function markDirty() {
@@ -969,41 +975,117 @@ async function eligibleDestinations(sock, { excludeJid = null, forceLive = false
  * Send one post to many channels. `post` = {type,text,caption,mime,fileName,ptt,gif,size}, `file` = local media path or null.
  * Per-channel errors never abort the run. Returns { sent[], skipped[], failed[] , hash }.
  */
-async function forwardToChannels(sock, post, file, dests, { force = false, delayMs = 1500, onProgress, confirm = true, fwd = null } = {}) {
+// ---- pacing / account-safety helpers ----
+const randBetween = (lo, hi) => { lo = Math.floor(lo); hi = Math.max(lo, Math.floor(hi)); return lo + crypto.randomInt(0, hi - lo + 1); };
+/** random pause between two channel posts (default 4-8 s) */
+const randDelay = () => { const S = cfg(); return randBetween(S.fwdDelayMin, S.fwdDelayMax); };
+const dayKey = () => new Date().toISOString().slice(0, 10);
+function capLeft(acct) { load(); const c = state.fwdCount[acct]; return !c || c.day !== dayKey() ? cfg().dailyCap : Math.max(0, cfg().dailyCap - c.n); }
+function capUse(acct) { load(); const c = state.fwdCount[acct]; state.fwdCount[acct] = c && c.day === dayKey() ? { day: c.day, n: c.n + 1 } : { day: dayKey(), n: 1 }; markDirty(); }
+
+/**
+ * Send one post to many channels, one after the other. `post` = {type,text,caption,mime,fileName,ptt,gif,size},
+ * `file` = local media path or null. `dests` = registry records; a record may carry `_sock` (the session that must
+ * post to it) - used by the all-sessions mode.
+ * Account safety (WhatsApp can restrict accounts that behave like spam):
+ *   - strictly sequential, random 4-8 s pause before every post (+2-5 s extra when the next post comes from another session)
+ *   - a session is skipped after 3 failures in a row
+ *   - at most CFORWARD_DAILY_CAP (100) posts per session per UTC day
+ *   - the same content is never sent twice to the same channel unless force
+ * Per-channel errors never abort the run. Returns { sent[], skipped[], failed[], hash, stopped? }.
+ */
+async function forwardToChannels(sock, post, file, dests, { force = false, delayMs = null, onProgress, confirm = true, fwd = null, shouldStop = null } = {}) {
   load();
   const hash = fingerprint(post, file);
   const result = { hash, sent: [], skipped: [], failed: [] };
   if (forwardLocks.has(hash)) { result.busy = true; return result; }
   forwardLocks.add(hash);
   try {
+    const S = cfg();
     const history = (state.forwarded[hash] = state.forwarded[hash] || { at: Date.now(), sent: [] });
-    for (const rec of dests) {
+    const strikes = new Map();
+    let attempted = false, prevAcct = null;
+    for (const item of dests) {
+      const { _sock, ...rec } = item;
+      const sk = _sock || sock;
+      const acct = accountOf(sk);
+      if (shouldStop && shouldStop()) { result.stopped = true; break; }
       if (!force && history.sent.includes(rec.jid)) { result.skipped.push({ rec, reason: 'already sent earlier (use --force to resend)' }); continue; }
-      if (!KIND_OF[post.type] && post.type !== 'conversation' && post.type !== 'extendedTextMessage') { result.failed.push({ rec, reason: `unsupported message type (${post.type})` }); continue; }
-      if (!isOpen(sock)) { result.failed.push({ rec, reason: 'bot connection is down' }); continue; }
+      if (!KIND_OF[post.type] && post.type !== 'conversation' && post.type !== 'extendedTextMessage') { result.failed.push({ rec, acct, reason: `unsupported message type (${post.type})` }); continue; }
+      if (!isOpen(sk)) { result.failed.push({ rec, acct, reason: 'bot connection is down' }); continue; }
+      if ((strikes.get(acct) || 0) >= 3) { result.failed.push({ rec, acct, reason: 'skipped: 3 failures in a row on this session (protecting the account)' }); continue; }
+      if (capLeft(acct) <= 0) { result.failed.push({ rec, acct, reason: `daily limit reached (${S.dailyCap} posts per session per day)` }); continue; }
+      if (attempted) { // human-like pause before every post except the first
+        let d = delayMs != null ? delayMs : randDelay();
+        if (delayMs == null && acct !== prevAcct) d += randBetween(S.sessionGapMin, S.sessionGapMax);
+        await sleep(d);
+        if (shouldStop && shouldStop()) { result.stopped = true; break; }
+        if (!isOpen(sk)) { result.failed.push({ rec, acct, reason: 'bot connection is down' }); continue; }
+      }
+      attempted = true; prevAcct = acct;
       try {
-        const r = await withTimeout(postToChannel(sock, rec.jid, post, file, { fwd }), 240000, 'send');
-        if (!r.ok) { result.failed.push({ rec, reason: r.error || 'failed' }); }
+        const r = await withTimeout(postToChannel(sk, rec.jid, post, file, { fwd }), 240000, 'send');
+        if (!r.ok) { strikes.set(acct, (strikes.get(acct) || 0) + 1); result.failed.push({ rec, acct, reason: r.error || 'failed' }); }
         else {
+          strikes.set(acct, 0); capUse(acct);
           history.sent.push(rec.jid); history.at = Date.now(); markDirty();
-          const item = { ...rec, _delivery: r.delivery, _note: r.note || null, _serverId: r.serverId || null };
+          const out = { ...rec, _delivery: r.delivery, _note: r.note || null, _serverId: r.serverId || null, _acct: acct };
           // no ack info: best effort, look at the channel feed to see whether the post appeared
           if (r.delivery === 'unconfirmed' && confirm) {
-            const before = await newestServerId(sock, rec.jid);
+            const before = await newestServerId(sk, rec.jid);
             await sleep(2500);
-            const after = await newestServerId(sock, rec.jid);
-            if (before != null && after != null) item._delivery = after > before ? 'confirmed' : 'not-seen';
+            const after = await newestServerId(sk, rec.jid);
+            if (before != null && after != null) out._delivery = after > before ? 'confirmed' : 'not-seen';
           }
-          result.sent.push(item);
+          result.sent.push(out);
         }
       } catch (e) {
-        result.failed.push({ rec, reason: String(e?.message || e).slice(0, 120) });
+        strikes.set(acct, (strikes.get(acct) || 0) + 1);
+        result.failed.push({ rec, acct, reason: String(e?.message || e).slice(0, 120) });
       }
       if (onProgress) { try { onProgress(result); } catch { /* ignore */ } }
-      await sleep(delayMs);
     }
   } finally { forwardLocks.delete(hash); markDirty(); }
   return result;
+}
+
+/**
+ * Plan a post over ALL connected sessions: every session contributes the channels it owns/administers
+ * (saved list, refreshed when old). A channel that several sessions administer is posted ONCE (owner role first,
+ * then the least-loaded session). -> { dests:[rec+_sock], sessions:[{account,admin,source}], channels, shared, problems:[{account,error}] }
+ */
+async function planAllSessions(origSock, { excludeJid = null, forceLive = false, max = 80 } = {}) {
+  const list = [], seen = new Set();
+  const add = (s) => { const a = accountOf(s); if (a && !seen.has(a) && isOpen(s)) { seen.add(a); list.push(s); } };
+  add(origSock);
+  try { for (const s of globalThis.ProBoySessionManager?.getActiveSocks?.() || []) add(s); } catch { /* ignore */ }
+  const cand = new Map(), sessions = [], problems = [];
+  for (const s of list.slice(0, max)) {
+    const a = accountOf(s);
+    if (memoryGuard.level() === 'critical') { problems.push({ account: a, error: 'skipped: server memory is critical' }); continue; }
+    let e;
+    try { e = await eligibleDestinations(s, { excludeJid, forceLive }); }
+    catch (err) { problems.push({ account: a, error: String(err?.message || err).slice(0, 100) }); continue; }
+    sessions.push({ account: a, admin: e.eligible.length, source: e.source || 'checked' });
+    for (const rec of e.eligible) {
+      if (!cand.has(rec.jid)) cand.set(rec.jid, []);
+      cand.get(rec.jid).push({ s, a, rec, owner: roleFor(rec, s) === 'OWNER' ? 1 : 0 });
+    }
+    if (e.source === 'live') await sleep(400);
+  }
+  const load_ = new Map(), perSession = new Map();
+  let shared = 0;
+  for (const [, arr] of [...cand.entries()].sort((x, y) => x[1].length - y[1].length)) { // scarcest channels first
+    if (arr.length > 1) shared++;
+    arr.sort((p, q) => (q.owner - p.owner) || ((load_.get(p.a) || 0) - (load_.get(q.a) || 0)));
+    const pick = arr[0];
+    load_.set(pick.a, (load_.get(pick.a) || 0) + 1);
+    if (!perSession.has(pick.a)) perSession.set(pick.a, []);
+    perSession.get(pick.a).push({ ...pick.rec, _sock: pick.s });
+  }
+  const dests = [];
+  for (const s of list) for (const d of perSession.get(accountOf(s)) || []) dests.push(d); // session by session
+  return { dests, sessions, channels: cand.size, shared, problems };
 }
 
 /** Registry entry for an explicit target (created if unknown; name filled in if WhatsApp tells us). */
@@ -1032,9 +1114,9 @@ module.exports = {
   // delete log
   reportChannelDelete, resolveLogJid,
   // forwarding
-  eligibleDestinations, forwardToChannels, targetRecord, postToChannel, uploadNewsletterMedia, buildNewsletterMessage, sendNewsletterRaw,
+  eligibleDestinations, forwardToChannels, planAllSessions, randDelay, capLeft, targetRecord, postToChannel, uploadNewsletterMedia, buildNewsletterMessage, sendNewsletterRaw,
   // live list from WhatsApp + separate owner/admin file
   fetchSubscribed, syncMyChannels, syncAllSessions, savedAdminFor, savedAccounts, scheduleAutoSync, readAdminFile, ADMIN_FILE, isOpen,
   // misc
-  status, flush, pruneAll, _state: () => state, _reset: () => { loaded = false; state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [] }; }
+  status, flush, pruneAll, _state: () => state, _reset: () => { loaded = false; state = { v: 1, channels: {}, posts: {}, deleted: {}, forwarded: {}, deleteLog: [], fwdCount: {} }; }
 };
