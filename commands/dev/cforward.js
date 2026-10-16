@@ -2,6 +2,9 @@
  * .cforward - post one message to ALL channels this account owns/administers.
  *   Mode A: reply to a post with  .cforward
  *   Mode B: .cforward https://whatsapp.com/channel/<code>/<postId>
+ *   ALL SESSIONS: .cforward -a -s   (reply to a post)   or   .cforward -a -s <channel post link>
+ *     every connected session posts to the channels IT owns/administers (each channel once). Only the main
+ *     owner number may use it. Runs in the background, 4-8 s random pause between posts. `.cforward stop` / `.cforward status`.
  * Flags: --force  resend even if the same content already went to a channel
  *        --sync   ignore the saved channel list and ask WhatsApp again
  *        --plain  post as a normal message (no "Forwarded" label)
@@ -19,29 +22,58 @@ const hub = require('../../utils/channelHub');
 
 const MAX_SHOWN = 15;
 const name = (rec) => rec.name || rec.jid;
+const digits = (v) => String(v || '').split('@')[0].split(':')[0].replace(/\D/g, '');
+
+// The ONE number allowed to run the all-sessions mode (-a -s). Default: the first configured owner number.
+const allSessionsNumber = () => digits(process.env.CFORWARD_ALL_NUMBER || config.channelSettings?.allSessionsNumber || (Array.isArray(config.ownerNumber) ? config.ownerNumber[0] : config.ownerNumber));
+const senderDigits = (extra) => digits(extra.utils?.normalizeJidWithLid ? extra.utils.normalizeJidWithLid(extra.sender) : extra.sender);
+
+let job = null; // the running all-sessions forward (only one at a time)
+const fmtMin = (ms) => { const m = Math.round(ms / 60000); return m < 1 ? '<1 min' : `~${m} min`; };
 
 module.exports = {
   name: 'cforward',
   aliases: ['chforward'],
   category: 'dev',
-  description: 'Forward a replied post (or a channel post link) to every channel you own/admin',
-  usage: `${config.prefix}cforward [<jid,jid,...>] [<channel post link>] [--force]   (reply to a post, or give a link)`,
-  ownerOnly: true,
+  description: 'Forward a replied post (or a channel post link) to every channel this session owns/admins; -a -s = all sessions (main owner only)',
+  usage: `${config.prefix}cforward [-a -s] [<jid,jid,...>] [<channel post link>] [--force] [--sync] [--plain] [--fwd]   (reply to a post, or give a link)`,
+  // anyone may call it, the body decides: bot owner / sudo / the session's own account. -a -s is further restricted to the main number.
+  ownerOnly: false,
 
   async execute(sock, msg, args, extra) {
     const { reply, react } = extra;
-    if (!extra.isOwner && !extra.isSudo) return reply('🔒 Owner only.');
-    let tmpFile = null;
+    if (!extra.isOwner && !extra.isSudo && !msg?.key?.fromMe) return reply('🔒 Owner only.');
+    let tmpFile = null, deferCleanup = false;
     try {
       hub.registerSock(sock);
       const has = (f) => args.some((a) => a.toLowerCase() === f);
       const force = has('--force'), forceSync = has('--sync'), plain = has('--plain'), forceFwd = has('--fwd');
-      const rest = args.filter((a) => !a.startsWith('--'));
+      const low = args.map((a) => a.toLowerCase());
+      const allSessions = low.some((a) => a === '--all-sessions' || a === '-as' || a === '-sa') || (low.includes('-a') && low.includes('-s'));
+      const rest = args.filter((a) => !a.startsWith('-'));
+
+      // ---- job control ----
+      if (low[0] === 'stop' || low[0] === 'status') {
+        if (low[0] === 'stop') { if (!job) return reply('ℹ️ No all-sessions forward is running.'); job.stop = true; return reply('🛑 Stopping after the post that is being sent right now...'); }
+        if (!job) return reply('ℹ️ No all-sessions forward is running.');
+        const left = Math.max(0, job.total - job.done);
+        return reply(`📊 *All-sessions forward*\nProgress: ${job.done}/${job.total}  (✅ ${job.sent} • ❌ ${job.failed} • ⏭️ ${job.skipped})\nRunning for ${fmtMin(Date.now() - job.startedAt)} • about ${fmtMin(left * 6500)} left\nStop with ${config.prefix}cforward stop`);
+      }
+
+      // ---- all-sessions mode: restricted to the main owner number ----
+      if (allSessions) {
+        const allowed = allSessionsNumber();
+        if (!extra.isOwner || !allowed || senderDigits(extra) !== allowed) {
+          return reply('⛔ *Restricted*\nThe all-sessions mode (-a -s) can only be used by the main owner number.\nNormal .cforward (this session\'s own channels) still works for you.');
+        }
+        if (job) return reply(`⏳ An all-sessions forward is already running (${job.done}/${job.total}). Wait for it, or send ${config.prefix}cforward stop`);
+      }
       const linkArg = rest.find((a) => /whatsapp\.com\/channel\//i.test(a));
       // explicit targets:  .cforward 1203...@newsletter,1204...@newsletter   (bare numbers of 8+ digits get @newsletter)
       const targets = [...new Set(rest.filter((a) => !/whatsapp\.com\/channel\//i.test(a)).join(',').split(/[,\s]+/).map((t) => t.trim()).filter(Boolean)
         .map((t) => (/@newsletter$/i.test(t) ? t.toLowerCase() : (/^\d{8,}$/.test(t) ? `${t}@newsletter` : null))).filter(Boolean))];
 
+      if (allSessions && targets.length) return reply('❌ -a -s cannot be combined with explicit target channels. Use one or the other.');
       let post = null, sourceJid = null, sourceLabel = '', fwdInfo = null;
 
       // -------- Mode B: link --------
@@ -84,7 +116,7 @@ module.exports = {
         const ctx = content?.extendedTextMessage?.contextInfo || content?.conversation?.contextInfo || null;
         const quoted = ctx?.quotedMessage;
         if (!quoted) {
-          return reply(`ℹ️ *How to use ${config.prefix}cforward*\n\n1) Reply to a post (text/image/video/document/audio/sticker) with ${config.prefix}cforward  → goes to ALL channels you admin\n1b) ${config.prefix}cforward 1203...@newsletter,1204...@newsletter  (reply) → ONLY to those channels\n2) or ${config.prefix}cforward https://whatsapp.com/channel/CODE/POST_ID\n\nFlags: --force resend • --sync re-check channels with WhatsApp • --plain no "Forwarded" label • --fwd force the label.`);
+          return reply(`ℹ️ *How to use ${config.prefix}cforward*\n\n1) Reply to a post (text/image/video/document/audio/sticker) with ${config.prefix}cforward  → goes to ALL channels you admin\n1b) ${config.prefix}cforward 1203...@newsletter,1204...@newsletter  (reply) → ONLY to those channels\n2) or ${config.prefix}cforward https://whatsapp.com/channel/CODE/POST_ID\n\nFlags: --force resend • --sync re-check channels with WhatsApp • --plain no "Forwarded" label • --fwd force the label.\n\nAll sessions (main owner only): reply to a post with ${config.prefix}cforward -a -s   or   ${config.prefix}cforward -a -s <post link>`);
         }
         const q = hub.unwrap(quoted);
         const d = hub.describeContent(quoted);
@@ -101,6 +133,57 @@ module.exports = {
         sourceLabel = sourceJid ? `${hub.getChannel(sourceJid)?.name || sourceJid} (replied post)` : 'replied message';
         const fni = qInner?.contextInfo?.forwardedNewsletterMessageInfo;
         if (sourceJid) fwdInfo = { jid: sourceJid, serverId: fni?.serverMessageId || undefined, name: fni?.newsletterName || hub.getChannel(sourceJid)?.name || undefined };
+      }
+
+      const fwd = plain ? null : (fwdInfo || (forceFwd ? {} : null));
+
+      // -------- ALL SESSIONS (background job) --------
+      if (allSessions) {
+        await reply('🧭 Checking which channels each connected session owns/administers...');
+        const plan = await hub.planAllSessions(sock, { excludeJid: sourceJid, forceLive: forceSync });
+        if (!plan.dests.length) {
+          await react('❌');
+          return reply(`❌ None of the ${plan.sessions.length} connected session(s) is owner/admin of a channel${sourceJid ? ' (other than the source channel)' : ''}.${plan.problems.length ? '\n⚠️ ' + plan.problems.slice(0, 5).map((p) => `+${p.account}: ${p.error}`).join('\n') : ''}`);
+        }
+        const used = new Set(plan.dests.map((d) => hub.accountOf(d._sock)));
+        job = { startedAt: Date.now(), total: plan.dests.length, done: 0, sent: 0, failed: 0, skipped: 0, stop: false };
+        deferCleanup = true;
+        const S = { min: Number(process.env.CFORWARD_DELAY_MIN_MS) || 4000, max: Number(process.env.CFORWARD_DELAY_MAX_MS) || 8000 };
+        await reply(`🚀 *All-sessions forward started*\nChannels: ${plan.dests.length} (via ${used.size} of ${plan.sessions.length} session(s))${plan.shared ? `\nShared channels (several sessions are admin): ${plan.shared} → posted once each` : ''}\nStyle: ${fwd ? (fwd.jid ? 'forwarded from channel' : 'forwarded') : 'normal post'}\nPause: random ${S.min / 1000}-${S.max / 1000} s between posts (+ a little more when the session changes)\nEstimated time: ${fmtMin(plan.dests.length * ((S.min + S.max) / 2 + 1500))}\nStop: ${config.prefix}cforward stop • Progress: ${config.prefix}cforward status`);
+        const file = tmpFile?.path || null;
+        console.log(`[CFORWARD] ALL-SESSIONS type=${post.type} size=${post.size || 0} media=${file ? 'yes' : 'no'} channels=${plan.dests.length} sessions=${used.size}`);
+        (async () => {
+          try {
+            let lastNote = 0;
+            const res = await hub.forwardToChannels(sock, post, file, plan.dests, {
+              force, fwd, confirm: false,
+              shouldStop: () => job.stop,
+              onProgress: (r) => {
+                job.done = r.sent.length + r.failed.length; job.sent = r.sent.length; job.failed = r.failed.length; job.skipped = r.skipped.length;
+                if (job.done - lastNote >= 20) { lastNote = job.done; sock.sendMessage(extra.from, { text: `⏳ Forwarding... ${job.done}/${job.total} (✅ ${job.sent} • ❌ ${job.failed})` }).catch(() => {}); }
+              }
+            });
+            if (res.busy) return reply('⏳ This exact post is already being forwarded right now. Not sending it twice.');
+            const bySess = new Map();
+            const row = (a) => { if (!bySess.has(a)) bySess.set(a, { ok: 0, bad: 0 }); return bySess.get(a); };
+            for (const r of res.sent) row(r._acct).ok++;
+            for (const f of res.failed) row(f.acct).bad++;
+            const kb = post.size ? ` (${post.size > 1048576 ? (post.size / 1048576).toFixed(1) + ' MB' : Math.round(post.size / 1024) + ' KB'})` : '';
+            let out = `*📢 ALL-SESSIONS FORWARD ${res.stopped ? '— STOPPED' : 'DONE'}*\nSource: ${sourceLabel}\nType: ${post.type.replace('Message', '')}${kb}${post.caption ? ' + caption' : ''}\nStyle: ${fwd ? (fwd.jid ? 'forwarded from channel' : 'forwarded') : 'normal post'}\nTook: ${fmtMin(Date.now() - job.startedAt)}\n\n✅ *Sent: ${res.sent.length}*  ❌ *Failed: ${res.failed.length}*  ⏭️ *Skipped: ${res.skipped.length}*${res.stopped ? `  🛑 *Not reached: ${plan.dests.length - res.sent.length - res.failed.length - res.skipped.length}*` : ''}\n\n*By session*`;
+            for (const [a, v] of [...bySess.entries()].slice(0, 40)) out += `\n📱 +${a}: ✅ ${v.ok}${v.bad ? `  ❌ ${v.bad}` : ''}`;
+            if (res.failed.length) out += `\n\n❌ *Failures*\n` + res.failed.slice(0, 15).map((f) => `• ${name(f.rec)} (+${f.acct}) — ${f.reason}`).join('\n') + (res.failed.length > 15 ? `\n…and ${res.failed.length - 15} more` : '');
+            if (res.skipped.length) out += `\n\n⏭️ Skipped (already sent earlier): ${res.skipped.length} — use --force to resend`;
+            if (plan.problems.length) out += `\n\n⚠️ Sessions not used:\n` + plan.problems.slice(0, 8).map((p) => `• +${p.account}: ${p.error}`).join('\n');
+            await reply(out);
+          } catch (e) {
+            console.error('[cforward all-sessions]', e);
+            try { await reply(`❌ All-sessions forward crashed: ${e.message}`); } catch { /* ignore */ }
+          } finally {
+            job = null;
+            if (tmpFile && tmpFile.path && !tmpFile.keep) { try { fs.unlinkSync(tmpFile.path); } catch { /* ignore */ } }
+          }
+        })();
+        return;
       }
 
       // -------- destinations --------
@@ -123,7 +206,6 @@ module.exports = {
         const src2 = !listInfo?.source ? 'each tracked channel verified with WhatsApp' : listInfo.source === 'live' ? 'checked live with WhatsApp' : listInfo.source === 'saved' ? `saved list, synced ${ago} min ago` : `saved list (STALE ${ago} min; live check failed: ${listInfo?.liveError || '?'})`;
         await reply(`📢 Session +${listInfo?.account || '?'} is owner/admin of ${dests.length} channel(s) (${src2}).\nPosting to all of them${force ? ' (--force)' : ''}...`);
       }
-      const fwd = plain ? null : (fwdInfo || (forceFwd ? {} : null));
       console.log(`[CFORWARD] session=${hub.accountOf(sock)} type=${post.type} size=${post.size || 0} media=${tmpFile?.path ? 'yes' : 'no'} dests=${dests.length} fwd=${fwd ? (fwd.jid ? 'channel' : 'generic') : 'no'}`);
       const res = await hub.forwardToChannels(sock, post, tmpFile?.path || null, dests, { force, fwd });
       if (res.busy) { await react('⏳'); return reply('⏳ This exact post is already being forwarded right now. Not sending it twice.'); }
@@ -142,7 +224,7 @@ module.exports = {
       await reply(`❌ ${e.message}`);
       await react('❌');
     } finally {
-      if (tmpFile && tmpFile.path && !tmpFile.keep) { try { fs.unlinkSync(tmpFile.path); } catch { /* ignore */ } }
+      if (!deferCleanup && tmpFile && tmpFile.path && !tmpFile.keep) { try { fs.unlinkSync(tmpFile.path); } catch { /* ignore */ } }
     }
   }
 };
