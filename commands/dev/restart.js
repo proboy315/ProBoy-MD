@@ -13,6 +13,20 @@ function run(cmd) {
   });
 }
 
+/**
+ * Is this process a child of the ProBoy supervisor (index.js)?
+ * If yes, the supervisor restarts us when we exit - spawning ANOTHER copy here would run two bots on the same
+ * sessions (WhatsApp then kicks both with 440 "conflict" in a loop and the sessions stay offline for hours).
+ */
+function isSupervised() {
+  try {
+    if (process.env.PROBOY_SUPERVISED === '1') return true;
+    const cmd = require('fs').readFileSync(`/proc/${process.ppid}/cmdline`, 'utf8').split('\0').filter(Boolean);
+    // supervisor = "node index.js" (or npm start / a process manager running index.js)
+    return cmd.some((a) => /(^|\/)index\.js$/.test(a)) && !cmd.some((a) => /(^|\/)proboy\.js$/.test(a));
+  } catch { return false; }
+}
+
 function restartWithCurrentRuntime() {
   const nodeBin = process.argv[0];
   const args = process.argv.slice(1);
@@ -23,6 +37,13 @@ function restartWithCurrentRuntime() {
     env: process.env
   });
   child.unref();
+}
+
+/** Close every WhatsApp socket cleanly (SIGTERM handler in proboy.js does that), then exit(0). Hard exit after 10 s. */
+function gracefulExit() {
+  const hard = setTimeout(() => process.exit(0), 10000);
+  if (hard.unref) hard.unref();
+  try { process.kill(process.pid, 'SIGTERM'); } catch { process.exit(0); }
 }
 
 module.exports = {
@@ -47,6 +68,13 @@ module.exports = {
         return;
       } catch (e) {
         console.log('PM2 not available, relaunching with current Node runtime');
+      }
+
+      if (isSupervised()) {
+        // the supervisor starts the new process after we exit - do NOT start a second one ourselves
+        console.log('[RESTART] supervisor detected: exiting cleanly, it will start the new process');
+        setTimeout(gracefulExit, 500);
+        return;
       }
 
       restartWithCurrentRuntime();
