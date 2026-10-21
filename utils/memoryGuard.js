@@ -206,6 +206,83 @@ class BoundedMap {
 }
 
 // ---------------------------------------------------------------------------
+// Slow-but-stable helpers: when memory is tight we WAIT instead of failing / crashing.
+// ---------------------------------------------------------------------------
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Make global.gc() available even though the process was started without --expose-gc (idempotent). */
+function enableGc() {
+  try {
+    if (typeof global.gc !== 'function') {
+      require('v8').setFlagsFromString('--expose-gc');
+      global.gc = require('vm').runInNewContext('gc');
+    }
+  } catch { /* gc simply stays unavailable */ }
+  return typeof global.gc === 'function';
+}
+
+let lastGcAt = 0;
+/** Run a full GC at most once per `minGapMs`. Returns true when it ran. */
+function maybeGc(minGapMs = 10000) {
+  if (typeof global.gc !== 'function') return false;
+  const now = Date.now();
+  if (now - lastGcAt < minGapMs) return false;
+  lastGcAt = now;
+  try { global.gc(); return true; } catch { return false; }
+}
+
+/**
+ * Wait (up to maxWaitMs) until `bytes` of working memory fit, nudging the GC meanwhile.
+ * Resolves true when there is room, false when we gave up (caller may still try / fail politely).
+ */
+async function waitForRoom(bytes, { maxWaitMs = 90000, factor = 3, pollMs = 2000 } = {}) {
+  const t0 = Date.now();
+  for (;;) {
+    if (canAllocate(bytes, factor)) return true;
+    maybeGc(3000);
+    if (Date.now() - t0 >= maxWaitMs) return false;
+    await sleepMs(pollMs);
+  }
+}
+
+// Concurrency gate for message processing across ALL sessions:
+//   ok -> unlimited, high -> GATE_HIGH at a time, critical -> GATE_CRIT at a time.
+// Messages are never dropped, they just queue (bot answers slower instead of running out of memory).
+const GATE_HIGH = () => envNum('BOT_GATE_HIGH', 3);
+const GATE_CRIT = () => envNum('BOT_GATE_CRIT', 1);
+const GATE_MAX_WAIT_MS = () => envNum('BOT_GATE_MAX_WAIT_MS', 45000);
+let gateActive = 0;
+const gateQueue = [];
+const gateLimit = () => { const lv = level(); return lv === 'critical' ? GATE_CRIT() : lv === 'high' ? GATE_HIGH() : Infinity; };
+function gateWake() {
+  while (gateQueue.length && gateActive < gateLimit()) {
+    const w = gateQueue.shift();
+    clearTimeout(w.timer);
+    gateActive++;
+    w.resolve(w.release);
+  }
+}
+/** Await before doing heavy per-message work; call the returned function when done (always, in finally). */
+function gate() {
+  let released = false;
+  const release = () => { if (released) return; released = true; gateActive = Math.max(0, gateActive - 1); gateWake(); };
+  if (gateActive < gateLimit()) { gateActive++; return Promise.resolve(release); }
+  maybeGc(5000);
+  return new Promise((resolve) => {
+    const w = { resolve, release, timer: null };
+    // never starve a message forever: after the max wait it is let through anyway
+    w.timer = setTimeout(() => {
+      const i = gateQueue.indexOf(w);
+      if (i >= 0) gateQueue.splice(i, 1);
+      gateActive++;
+      resolve(release);
+    }, GATE_MAX_WAIT_MS());
+    if (w.timer.unref) w.timer.unref();
+    gateQueue.push(w);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Prune registry + monitor
 // ---------------------------------------------------------------------------
 const pruners = new Map(); // name -> fn(severity) -> any
@@ -224,14 +301,16 @@ let lastLevel = 'ok';
 let lastLogAt = 0;
 function startMonitor({ intervalMs = 30000, log = console.log } = {}) {
   if (monitorTimer) return;
+  enableGc();
   monitorTimer = setInterval(() => {
     try {
       const lv = level();
-      if (lv === 'high') pruneAll('soft');
+      if (lv === 'high') { pruneAll('soft'); maybeGc(30000); }
       if (lv === 'critical') {
         pruneAll('hard');
-        if (typeof global.gc === 'function') { try { global.gc(); } catch { /* ignore */ } }
+        maybeGc(10000);
       }
+      gateWake();
       const now = Date.now();
       if (lv !== lastLevel || (lv !== 'ok' && now - lastLogAt > 5 * 60 * 1000)) {
         lastLevel = lv; lastLogAt = now;
@@ -247,5 +326,6 @@ function startMonitor({ intervalMs = 30000, log = console.log } = {}) {
 module.exports = {
   limitBytes, usedBytes, ratio, level, canAllocate, canAdmitSession,
   estimateAdditionalSessions, snapshot, BoundedMap,
-  registerPrune, pruneAll, startMonitor, MB
+  registerPrune, pruneAll, startMonitor, MB,
+  enableGc, maybeGc, waitForRoom, gate
 };

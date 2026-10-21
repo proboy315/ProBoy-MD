@@ -61,6 +61,13 @@ const cfg = () => ({
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Slow-but-works: when server memory is critical, wait (nudging the GC) instead of failing. true = ok to go on. */
+const memWaitMs = () => { const n = Number(process.env.CHANNEL_MEM_WAIT_MS); return Number.isFinite(n) && n >= 0 ? n : 60000; };
+async function calm(maxMs = memWaitMs()) {
+  const t0 = Date.now();
+  while (memoryGuard.level() === 'critical' && Date.now() - t0 < maxMs) { memoryGuard.maybeGc(3000); await sleep(2000); }
+  return memoryGuard.level() !== 'critical';
+}
 const ADMIN_ROLES = new Set(['OWNER', 'ADMIN']);
 const isNewsletterJid = (j) => typeof j === 'string' && j.endsWith('@newsletter');
 const accountOf = (sock) => String(sock?.user?.id || '').split(':')[0].split('@')[0];
@@ -272,7 +279,8 @@ async function saveMedia(sock, key, message, tag) {
   const mc = c[d.type];
   if (d.size && d.size > S.maxMediaBytes) return null;
   if (activeDownloads >= 1) return null; // one at a time (RAM)
-  if (!memoryGuard.canAllocate(d.size || 2 * MB)) return null;
+  // encrypted media is downloaded into a buffer first -> wait for room (slow but works); channel media is streamed to disk
+  if (mc.mediaKey && mc.mediaKey.length > 0 && !(await memoryGuard.waitForRoom(d.size || 2 * MB, { maxWaitMs: memWaitMs() }))) return null;
   activeDownloads++;
   const file = path.join(MEDIA_DIR, `${Date.now()}_${String(tag || 'm').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40)}.${extFor(d)}`);
   try {
@@ -641,30 +649,63 @@ const KIND_OF = { imageMessage: 'image', videoMessage: 'video', audioMessage: 'a
 const b64url = (buf) => buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 const prune = (o) => { for (const k of Object.keys(o)) if (o[k] === undefined || o[k] === null) delete o[k]; return o; };
 
+/** sha256 of a file, read in 256 KB chunks. */
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const rs = fs.createReadStream(file, { highWaterMark: 256 * 1024 });
+    rs.on('data', (c) => h.update(c));
+    rs.on('error', reject);
+    rs.on('end', () => resolve(h.digest()));
+  });
+}
+/** POST a local file as the request body (streamed, explicit Content-Length). -> { ok, status, json } */
+function postFile(url, file, size, headers, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === 'http:' ? require('http') : require('https');
+    const req = mod.request(u, { method: 'POST', headers: { ...headers, 'Content-Length': size } }, (res) => {
+      const parts = []; let total = 0;
+      res.on('data', (c) => { total += c.length; if (total < 64 * 1024) parts.push(c); });
+      res.on('end', () => {
+        let json = null; try { json = JSON.parse(Buffer.concat(parts).toString('utf8')); } catch { /* not json */ }
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json });
+      });
+      res.on('error', reject);
+    });
+    req.setTimeout(timeoutMs, () => req.destroy(new Error('upload timed out')));
+    req.on('error', reject);
+    const rs = fs.createReadStream(file, { highWaterMark: 64 * 1024 });
+    rs.on('error', (e) => req.destroy(e));
+    rs.pipe(req);
+  });
+}
+
 /** Upload a local file (unencrypted) to the newsletter media endpoint. Returns {url,directPath,handle,thumb*,fileSha256,fileLength}. */
 async function uploadNewsletterMedia(sock, file, kind) {
   if (!NL_UPLOAD_PATH[kind]) throw new Error(`no newsletter upload path for ${kind}`);
   if (typeof sock?.refreshMediaConn !== 'function') throw new Error('this socket cannot refresh the media connection');
   const size = fs.statSync(file).size;
   if (size > cfg().maxMediaBytes) throw new Error(`file too large (${Math.round(size / MB)} MB)`);
-  if (!memoryGuard.canAllocate(size * 2 + MB)) throw new Error('not enough free memory to upload this file right now');
-  const data = fs.readFileSync(file);
-  const fileSha256 = crypto.createHash('sha256').update(data).digest();
+  // [STABILITY] the file is hashed and POSTed as a stream (never fully in RAM). It used to read the whole file twice
+  // into memory and refuse anything bigger than ~1/6 of the free RAM ("not enough free memory" on a 10 MB video).
+  await memoryGuard.waitForRoom(2 * MB, { factor: 1, maxWaitMs: memWaitMs() }); // best effort: streaming needs ~1 MB
+  const fileSha256 = await sha256File(file);
   const token = b64url(fileSha256);
   let conn = await sock.refreshMediaConn(false);
   let lastErr = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     for (const h of (conn?.hosts || [])) {
-      const url = `https://${h.hostname}${NL_UPLOAD_PATH[kind]}/${token}?auth=${encodeURIComponent(conn.auth)}&token=${token}&server_thumb_gen=1`;
+      const url = `${h.scheme || 'https'}://${h.hostname}${NL_UPLOAD_PATH[kind]}/${token}?auth=${encodeURIComponent(conn.auth)}&token=${token}&server_thumb_gen=1`;
       try {
-        const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream', Origin: 'https://web.whatsapp.com' }, body: data, signal: AbortSignal.timeout(120000) });
-        const j = await res.json().catch(() => null);
+        const res = await postFile(url, file, size, { 'Content-Type': 'application/octet-stream', Origin: 'https://web.whatsapp.com' }, 120000);
+        const j = res.json;
         if (res.ok && j && (j.url || j.direct_path)) {
           return {
             url: j.url, directPath: j.direct_path, handle: j.handle || null,
             thumbnailDirectPath: j.thumbnail_info?.thumbnail_direct_path || null,
             thumbnailSha256: j.thumbnail_info?.thumbnail_sha256 ? Buffer.from(j.thumbnail_info.thumbnail_sha256, 'base64') : null,
-            fileSha256, fileLength: data.length
+            fileSha256, fileLength: size
           };
         }
         lastErr = new Error(`upload to ${h.hostname} failed: HTTP ${res.status} ${JSON.stringify(j || {}).slice(0, 120)}`);
@@ -921,7 +962,7 @@ async function collectAllSessions(origSock, { force = false, max = 80, delayMs =
   const rows = [], problems = [], uniq = new Map();
   for (const s of list.slice(0, max)) {
     const a = accountOf(s);
-    if (memoryGuard.level() === 'critical') { problems.push({ account: a, error: 'skipped: server memory is critical' }); continue; }
+    if (!(await calm())) { problems.push({ account: a, error: `skipped: server memory stayed critical for ${Math.round(memWaitMs() / 1000)} s` }); continue; }
     const r = await syncMyChannels(s, { force });
     if (!r.ok) { problems.push({ account: a, error: r.error }); continue; }
     await fillFollowers(s, r.admin);
@@ -969,7 +1010,7 @@ async function syncAllSessions({ force = true, delayMs = 500, max = 80, onProgre
     const acct = accountOf(s);
     if (!acct || seen.has(acct) || !isOpen(s)) continue;
     seen.add(acct);
-    if (memoryGuard.level() === 'critical') { out.failed.push({ account: acct, error: 'skipped: server memory is critical' }); continue; }
+    if (!(await calm())) { out.failed.push({ account: acct, error: `skipped: server memory stayed critical for ${Math.round(memWaitMs() / 1000)} s` }); continue; }
     const r = await syncMyChannels(s, { force });
     if (r.ok) { out.ok++; out.rows.push({ account: acct, followed: r.total, admin: r.admin.length }); }
     else out.failed.push({ account: acct, error: r.error });
@@ -1083,9 +1124,10 @@ async function forwardToChannels(sock, post, file, dests, { force = false, delay
         if (!isOpen(sk)) { result.failed.push({ rec, acct, reason: 'bot connection is down' }); continue; }
       }
       attempted = true; prevAcct = acct;
+      await calm(); // memory critical -> wait a bit (slow but works)
       try {
         const r = await withTimeout(postToChannel(sk, rec.jid, post, file, { fwd }), 240000, 'send');
-        if (!r.ok) { strikes.set(acct, (strikes.get(acct) || 0) + 1); result.failed.push({ rec, acct, reason: r.error || 'failed' }); }
+        if (!r.ok) { if (!/memory/i.test(String(r.error || ''))) strikes.set(acct, (strikes.get(acct) || 0) + 1); result.failed.push({ rec, acct, reason: r.error || 'failed' }); }
         else {
           strikes.set(acct, 0); capUse(acct);
           history.sent.push(rec.jid); history.at = Date.now(); markDirty();
@@ -1100,7 +1142,7 @@ async function forwardToChannels(sock, post, file, dests, { force = false, delay
           result.sent.push(out);
         }
       } catch (e) {
-        strikes.set(acct, (strikes.get(acct) || 0) + 1);
+        if (!/memory/i.test(String(e?.message || e))) strikes.set(acct, (strikes.get(acct) || 0) + 1); // our own RAM shortage is not the account's fault
         result.failed.push({ rec, acct, reason: String(e?.message || e).slice(0, 120) });
       }
       if (onProgress) { try { onProgress(result); } catch { /* ignore */ } }
@@ -1122,7 +1164,7 @@ async function planAllSessions(origSock, { excludeJid = null, forceLive = false,
   const cand = new Map(), sessions = [], problems = [];
   for (const s of list.slice(0, max)) {
     const a = accountOf(s);
-    if (memoryGuard.level() === 'critical') { problems.push({ account: a, error: 'skipped: server memory is critical' }); continue; }
+    if (!(await calm())) { problems.push({ account: a, error: `skipped: server memory stayed critical for ${Math.round(memWaitMs() / 1000)} s` }); continue; }
     let e;
     try { e = await eligibleDestinations(s, { excludeJid, forceLive }); }
     catch (err) { problems.push({ account: a, error: String(err?.message || err).slice(0, 100) }); continue; }
